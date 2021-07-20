@@ -1,11 +1,24 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package applicationconfiguration
 
 import (
 	"context"
 	"time"
-
-	"github.com/crossplane/crossplane-runtime/pkg/logging"
-	ctrl "sigs.k8s.io/controller-runtime"
 
 	"k8s.io/apimachinery/pkg/types"
 
@@ -295,7 +308,7 @@ var _ = Describe("Test apply (workloads/traits) once only", func() {
 	When("ApplyOnceOnlyForce is enabled", func() {
 		It("tests the situation where workload is not applied at the first because of unsatisfied dependency",
 			func() {
-				componentHandler := &ComponentHandler{Client: k8sClient, RevisionLimit: 100, Logger: logging.NewLogrLogger(ctrl.Log.WithName("component-handler"))}
+				componentHandler := &ComponentHandler{Client: k8sClient, RevisionLimit: 100}
 
 				By("Enable ApplyOnceOnlyForce")
 				reconciler.applyOnceOnlyMode = core.ApplyOnceOnlyForce
@@ -445,7 +458,7 @@ var _ = Describe("Test apply (workloads/traits) once only", func() {
 
 		It("tests the situation where workload is not applied at the first because of unsatisfied dependency and revision specified",
 			func() {
-				componentHandler := &ComponentHandler{Client: k8sClient, RevisionLimit: 100, Logger: logging.NewLogrLogger(ctrl.Log.WithName("component-handler"))}
+				componentHandler := &ComponentHandler{Client: k8sClient, RevisionLimit: 100}
 
 				By("Enable ApplyOnceOnlyForce")
 				reconciler.applyOnceOnlyMode = core.ApplyOnceOnlyForce

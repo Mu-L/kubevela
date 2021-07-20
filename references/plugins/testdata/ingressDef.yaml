@@ -1,11 +1,10 @@
-apiVersion: core.oam.dev/v1alpha2
+apiVersion: core.oam.dev/v1beta1
 kind: TraitDefinition
 metadata:
   name: ingress.test
 spec:
   appliesToWorkloads:
-    - webservice
-    - worker
+    - deployments.apps
   extension:
     template: |
       parameter: {

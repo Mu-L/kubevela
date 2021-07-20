@@ -1,31 +1,6 @@
-# KubeVela Website
-[kubevela.io](https://kubevela.io)
+# Contributing to KubeVela Docs
 
-## Contributing
+Documentation website： https://kubevela.io/
 
-- Fork and clone
-
-  ```
-  $ git clone git@github.com:oam-dev/kubevela.git
-  $ cd kubevela/docs
-  ```
-
-- Install docsify-cli
-  ```
-  $ npm i docsify-cli -g
-  ```
-
-- Make your changes
-
-- Local preview
-  ```
-  $ docsify serve
-  Serving /xxx/kubevela.io now.
-  Listening at http://localhost:3000
-  ```
-
-  Preview your changes at [http://127.0.0.1:3000/](http://127.0.0.1:3000/).
-
-- Push your commit
-
-  Thanks for your contribution!
+All docs of KubeVela are managed in [oam-dev/kubevela.io](https://github.com/oam-dev/kubevela.io) repo. Please refer
+to that repo for contributions.

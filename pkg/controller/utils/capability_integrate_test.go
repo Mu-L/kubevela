@@ -27,7 +27,7 @@ import (
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/yaml"
 
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 )
 
@@ -38,8 +38,8 @@ var _ = Describe("Test Capability", func() {
 		ns        corev1.Namespace
 	)
 
-	Context("When the definition is WorkloadDefinition", func() {
-		var workloadDefinitionName = "web1"
+	Context("When the definition is ComponentDefinition", func() {
+		var componentDefinitionName = "web1"
 		BeforeEach(func() {
 			ns = corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{
@@ -50,19 +50,19 @@ var _ = Describe("Test Capability", func() {
 			Expect(k8sClient.Create(ctx, &ns)).Should(SatisfyAny(Succeed(), &util.AlreadyExistMatcher{}))
 		})
 
-		It("Test CapabilityWorkloadDefinition", func() {
-			By("Apply WorkloadDefinition")
-			var validWorkloadDefinition = `
+		It("Test CapabilityComponentDefinition", func() {
+			By("Apply ComponentDefinition")
+			var validComponentDefinition = `
 apiVersion: core.oam.dev/v1alpha2
-kind: WorkloadDefinition
+kind: ComponentDefinition
 metadata:
   name: web1
   namespace: ns-cap
   annotations:
     definition.oam.dev/description: "test"
 spec:
-  definitionRef:
-    name: deployments.apps
+  workload:
+    type: deployments.apps
   schematic:
     cue:
       template: |
@@ -102,21 +102,17 @@ spec:
         }
 
 `
-			var workloadDefinition v1alpha2.WorkloadDefinition
-			Expect(yaml.Unmarshal([]byte(validWorkloadDefinition), &workloadDefinition)).Should(BeNil())
-			Expect(k8sClient.Create(ctx, &workloadDefinition)).Should(Succeed())
+			var componentDefinition v1beta1.ComponentDefinition
+			Expect(yaml.Unmarshal([]byte(validComponentDefinition), &componentDefinition)).Should(BeNil())
+			Expect(k8sClient.Create(ctx, &componentDefinition)).Should(Succeed())
 
 			By("Test GetCapabilityObject")
-			def := &CapabilityWorkloadDefinition{Name: workloadDefinitionName}
-			capability, err := def.GetCapabilityObject(ctx, k8sClient, namespace, workloadDefinitionName)
-			Expect(err).Should(BeNil())
-			Expect(capability).Should(Not(BeNil()))
+			def := &CapabilityComponentDefinition{Name: componentDefinitionName, ComponentDefinition: *componentDefinition.DeepCopy()}
 
 			By("Test GetOpenAPISchema")
-			schema, err := def.GetOpenAPISchema(ctx, k8sClient, namespace, workloadDefinitionName)
+			schema, err := def.GetOpenAPISchema(pd, namespace)
 			Expect(err).Should(BeNil())
 			Expect(schema).Should(Not(BeNil()))
-
 		})
 	})
 
@@ -145,8 +141,7 @@ metadata:
   name: scaler1
 spec:
   appliesToWorkloads:
-    - webservice
-    - worker
+    - deployments.apps
   definitionRef:
     name: manualscalertraits.core.oam.dev
   workloadRefPath: spec.workloadRef
@@ -167,19 +162,15 @@ spec:
         }
 `
 
-			var traitDefinition v1alpha2.TraitDefinition
+			var traitDefinition v1beta1.TraitDefinition
 			Expect(yaml.Unmarshal([]byte(validTraitDefinition), &traitDefinition)).Should(BeNil())
 			Expect(k8sClient.Create(ctx, &traitDefinition)).Should(Succeed())
 
-			By("Test GetCapabilityObject")
-			def := &CapabilityTraitDefinition{Name: traitDefinitionName}
-			capability, err := def.GetCapabilityObject(ctx, k8sClient, namespace, traitDefinitionName)
-			Expect(err).Should(BeNil())
-			Expect(capability).Should(Not(BeNil()))
+			def := &CapabilityTraitDefinition{Name: traitDefinitionName, TraitDefinition: *traitDefinition.DeepCopy()}
 
 			By("Test GetOpenAPISchema")
 			var expectedSchema = "{\"properties\":{\"replicas\":{\"default\":1,\"description\":\"Replicas of the workload\",\"title\":\"replicas\",\"type\":\"integer\"}},\"required\":[\"replicas\"],\"type\":\"object\"}"
-			schema, err := def.GetOpenAPISchema(ctx, k8sClient, namespace, traitDefinitionName)
+			schema, err := def.GetOpenAPISchema(pd, traitDefinitionName)
 			Expect(err).Should(BeNil())
 			Expect(string(schema)).Should(Equal(expectedSchema))
 		})
@@ -208,7 +199,7 @@ spec:
 				Controller:         pointer.BoolPtr(true),
 				BlockOwnerDeletion: pointer.BoolPtr(true),
 			}}
-			err := def.CreateOrUpdateConfigMap(ctx, k8sClient, namespace, definitionName, []byte(""), ownerReference)
+			_, err := def.CreateOrUpdateConfigMap(ctx, k8sClient, namespace, definitionName, []byte(""), ownerReference)
 			Expect(err).Should(BeNil())
 		})
 	})

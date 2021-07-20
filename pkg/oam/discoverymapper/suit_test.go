@@ -1,3 +1,19 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package discoverymapper
 
 import (
@@ -147,16 +163,172 @@ var _ = Describe("Mapper discovery resources", func() {
 		}))
 
 		var kinds []schema.GroupVersionKind
-		Eventually(func() error {
-			kinds, err = dism.KindsFor(schema.GroupVersionResource{Group: "example.com", Version: "", Resource: "foos"})
-			return err
-		}, time.Second*10, time.Millisecond*300).Should(BeNil())
-		Expect(kinds).Should(Equal([]schema.GroupVersionKind{
+		Eventually(func() []schema.GroupVersionKind {
+			kinds, _ = dism.KindsFor(schema.GroupVersionResource{Group: "example.com", Version: "", Resource: "foos"})
+			return kinds
+		}, time.Second*60, time.Second*3).Should(Equal([]schema.GroupVersionKind{
 			{Group: "example.com", Version: "v1", Kind: "Foo"},
 			{Group: "example.com", Version: "v1beta1", Kind: "Foo"},
 		}))
 		kinds, err = dism.KindsFor(schema.GroupVersionResource{Group: "example.com", Version: "v1", Resource: "foos"})
 		Expect(err).Should(BeNil())
 		Expect(kinds).Should(Equal([]schema.GroupVersionKind{{Group: "example.com", Version: "v1", Kind: "Foo"}}))
+	})
+
+	It("get GVK from k8s resource", func() {
+		dism, err := New(cfg)
+		Expect(err).Should(BeNil())
+
+		By("Test Pod")
+		podAPIVersion, podKind := "v1", "Pod"
+		podGV, err := schema.ParseGroupVersion(podAPIVersion)
+		Expect(err).Should(BeNil())
+		podGVR, err := dism.ResourcesFor(podGV.WithKind(podKind))
+		Expect(err).Should(BeNil())
+		Expect(podGVR).Should(Equal(schema.GroupVersionResource{
+			Version:  "v1",
+			Resource: "pods",
+		}))
+
+		By("Test Deployment")
+		deploymentAPIVersion, deploymentKind := "apps/v1", "Deployment"
+		deploymentGV, err := schema.ParseGroupVersion(deploymentAPIVersion)
+		Expect(err).Should(BeNil())
+		deploymentGVR, err := dism.ResourcesFor(deploymentGV.WithKind(deploymentKind))
+		Expect(err).Should(BeNil())
+		Expect(deploymentGVR).Should(Equal(schema.GroupVersionResource{
+			Group:    "apps",
+			Version:  "v1",
+			Resource: "deployments",
+		}))
+
+		By("Test CronJob")
+		cronJobAPIVersion, cronJobKind := "batch/v1", "Job"
+		cronJobGV, err := schema.ParseGroupVersion(cronJobAPIVersion)
+		Expect(err).Should(BeNil())
+		cronJobGVR, err := dism.ResourcesFor(cronJobGV.WithKind(cronJobKind))
+		Expect(err).Should(BeNil())
+		Expect(cronJobGVR).Should(Equal(schema.GroupVersionResource{
+			Group:    "batch",
+			Version:  "v1",
+			Resource: "jobs",
+		}))
+
+		By("Test Invalid GVK")
+		apiVersion, kind := "apps/v1", "Job"
+		gv, err := schema.ParseGroupVersion(apiVersion)
+		Expect(err).Should(BeNil())
+		_, err = dism.ResourcesFor(gv.WithKind(kind))
+		Expect(err).Should(HaveOccurred())
+	})
+
+	It("check API resource scope", func() {
+		dism, err := New(cfg)
+		Expect(err).Should(BeNil())
+
+		var (
+			clusterCRKind   = "ImClusterScope"
+			namespaceCRKind = "ImNamespaceScope"
+		)
+
+		By("Register a cluster-scoped CRD")
+		clusterScopeCRD := crdv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "imclusterscopes.example.com",
+			},
+			Spec: crdv1.CustomResourceDefinitionSpec{
+				Scope: crdv1.ClusterScoped,
+				Group: "example.com",
+				Names: crdv1.CustomResourceDefinitionNames{
+					Kind:   clusterCRKind,
+					Plural: "imclusterscopes",
+				},
+				Versions: []crdv1.CustomResourceDefinitionVersion{{
+					Name:    "v1",
+					Served:  true,
+					Storage: true,
+					Schema: &crdv1.CustomResourceValidation{
+						OpenAPIV3Schema: &crdv1.JSONSchemaProps{
+							Type: "object",
+						}},
+				}},
+			},
+		}
+		Expect(k8sClient.Create(context.Background(), &clusterScopeCRD)).Should(BeNil())
+
+		By("Register a namespace-scoped CRD")
+		namespaceScopeCRD := crdv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "imnamespacescopes.example.com",
+			},
+			Spec: crdv1.CustomResourceDefinitionSpec{
+				Scope: crdv1.NamespaceScoped,
+				Group: "example.com",
+				Names: crdv1.CustomResourceDefinitionNames{
+					Kind:   namespaceCRKind,
+					Plural: "imnamespacescopes",
+				},
+				Versions: []crdv1.CustomResourceDefinitionVersion{{
+					Name:    "v1",
+					Served:  true,
+					Storage: true,
+					Schema: &crdv1.CustomResourceValidation{
+						OpenAPIV3Schema: &crdv1.JSONSchemaProps{
+							Type: "object",
+						}},
+				}},
+			},
+		}
+		Expect(k8sClient.Create(context.Background(), &namespaceScopeCRD)).Should(BeNil())
+
+		By("Verify checking built-in cluster-scoped resource")
+		clusterBuiltInRsc := schema.GroupKind{
+			Group: "",
+			Kind:  "PersistentVolume",
+		}
+		isNamespaced, err := IsNamespacedScope(dism, clusterBuiltInRsc)
+		Expect(err).Should(BeNil())
+		Expect(isNamespaced).Should(BeFalse())
+
+		By("Verify checking built-in namespace-scoped resource")
+		namespaceBuiltInRsc := schema.GroupKind{
+			Group: "apps",
+			Kind:  "Deployment",
+		}
+		isNamespaced, err = IsNamespacedScope(dism, namespaceBuiltInRsc)
+		Expect(err).Should(BeNil())
+		Expect(isNamespaced).Should(BeTrue())
+
+		By("Verify checking cluster-scoped custom resource")
+		clusterCR := schema.GroupKind{
+			Group: "example.com",
+			Kind:  clusterCRKind,
+		}
+		By("Wait for refreshing DiscoveryMapper")
+		Eventually(func() error {
+			isNamespaced, err = IsNamespacedScope(dism, clusterCR)
+			return err
+		}, time.Second*2, time.Millisecond*300).Should(BeNil())
+		Expect(isNamespaced).Should(BeFalse())
+
+		By("Verify checking namespace-scoped custom resource")
+		namespaceCR := schema.GroupKind{
+			Group: "example.com",
+			Kind:  namespaceCRKind,
+		}
+		By("Wait for refreshing DiscoveryMapper")
+		Eventually(func() error {
+			isNamespaced, err = IsNamespacedScope(dism, namespaceCR)
+			return err
+		}, time.Second*2, time.Millisecond*300).Should(BeNil())
+		Expect(isNamespaced).Should(BeTrue())
+
+		By("Cannot check an unknown resource")
+		unknownCR := schema.GroupKind{
+			Group: "unknow.com",
+			Kind:  "Unknown",
+		}
+		_, err = IsNamespacedScope(dism, unknownCR)
+		Expect(err).ShouldNot(BeNil())
 	})
 })

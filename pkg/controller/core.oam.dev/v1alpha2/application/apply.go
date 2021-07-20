@@ -1,338 +1,282 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package application
 
 import (
 	"context"
-	"fmt"
-	"strconv"
-	"time"
 
 	runtimev1alpha1 "github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
-	"github.com/crossplane/crossplane-runtime/pkg/logging"
-	"github.com/go-logr/logr"
-	"github.com/mitchellh/hashstructure/v2"
-	"github.com/pkg/errors"
-	v1 "k8s.io/api/core/v1"
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	ctypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/utils/pointer"
-	ctrl "sigs.k8s.io/controller-runtime"
 
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
+	"github.com/pkg/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	terraformtypes "github.com/oam-dev/terraform-controller/api/types"
+	terraformapi "github.com/oam-dev/terraform-controller/api/v1beta1"
+
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/appfile"
+	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1alpha2/application/assemble"
+	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1alpha2/application/dispatch"
+	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1alpha2/applicationrollout"
 	"github.com/oam-dev/kubevela/pkg/controller/utils"
-	"github.com/oam-dev/kubevela/pkg/dsl/process"
+	"github.com/oam-dev/kubevela/pkg/cue/process"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	oamutil "github.com/oam-dev/kubevela/pkg/oam/util"
 )
 
-func errorCondition(tpy string, err error) runtimev1alpha1.Condition {
-	return runtimev1alpha1.Condition{
-		Type:               runtimev1alpha1.ConditionType(tpy),
-		Status:             v1.ConditionFalse,
-		LastTransitionTime: metav1.NewTime(time.Now()),
-		Reason:             runtimev1alpha1.ReasonReconcileError,
-		Message:            err.Error(),
-	}
+// AppHandler handles application reconcile
+type AppHandler struct {
+	r              *Reconciler
+	app            *v1beta1.Application
+	currentAppRev  *v1beta1.ApplicationRevision
+	latestAppRev   *v1beta1.ApplicationRevision
+	isNewRevision  bool
+	currentRevHash string
 }
 
-func readyCondition(tpy string) runtimev1alpha1.Condition {
-	return runtimev1alpha1.Condition{
-		Type:               runtimev1alpha1.ConditionType(tpy),
-		Status:             v1.ConditionTrue,
-		Reason:             runtimev1alpha1.ReasonAvailable,
-		LastTransitionTime: metav1.NewTime(time.Now()),
+// ApplyAppManifests will dispatch Application manifests
+func (h *AppHandler) ApplyAppManifests(ctx context.Context, comps []*types.ComponentManifest, policies []*unstructured.Unstructured) error {
+	appRev := h.currentAppRev
+	if (h.app.Spec.Workflow != nil && len(h.app.Spec.Workflow.Steps) > 0) || h.app.Annotations[oam.AnnotationAppRevisionOnly] == "true" {
+		return h.createResourcesConfigMap(ctx, appRev, comps, policies)
 	}
-}
-
-type appHandler struct {
-	r      *Reconciler
-	app    *v1alpha2.Application
-	logger logr.Logger
-}
-
-func (h *appHandler) handleErr(err error) (ctrl.Result, error) {
-	nerr := h.r.UpdateStatus(context.Background(), h.app)
-	if err == nil && nerr == nil {
-		return ctrl.Result{}, nil
+	if appWillRollout(h.app) {
+		return nil
 	}
-	if nerr != nil {
-		h.logger.Error(nerr, "[Update] application status")
-	}
-	return ctrl.Result{
-		RequeueAfter: time.Second * 10,
-	}, nil
-}
 
-// apply will
-// 1. set ownerReference for ApplicationConfiguration and Components
-// 2. update AC's components using the component revision name
-// 3. update or create the AC with new revision and remember it in the application status
-// 4. garbage collect unused components
-func (h *appHandler) apply(ctx context.Context, ac *v1alpha2.ApplicationConfiguration, comps []*v1alpha2.Component) error {
-	owners := []metav1.OwnerReference{{
-		APIVersion: v1alpha2.SchemeGroupVersion.String(),
-		Kind:       v1alpha2.ApplicationKind,
-		Name:       h.app.Name,
-		UID:        h.app.UID,
-		Controller: pointer.BoolPtr(true),
-	}}
-	ac.SetOwnerReferences(owners)
+	var latestTracker *v1beta1.ResourceTracker
+	if h.app.Status.LatestRevision != nil {
+		latestTracker = &v1beta1.ResourceTracker{}
+		latestTracker.SetName(dispatch.ConstructResourceTrackerName(h.app.Status.LatestRevision.Name, h.app.Namespace))
+	}
+	// only do GC when ALL resources are dispatched successfully
+	// so skip GC while dispatching addon resources
+	d := dispatch.NewAppManifestsDispatcher(h.r.Client, appRev).StartAndSkipGC(latestTracker)
+	// dispatch packaged workload resources before dispatching assembled manifests
 	for _, comp := range comps {
-		comp.SetOwnerReferences(owners)
-		newComp := comp.DeepCopy()
-		// newComp will be updated and return the revision name instead of the component name
-		revisionName, err := h.createOrUpdateComponent(ctx, newComp)
-		if err != nil {
-			return err
-		}
-		// find the ACC that contains this component
-		for i := 0; i < len(ac.Spec.Components); i++ {
-			// update the AC using the component revision instead of component name
-			// we have to make AC immutable including the component it's pointing to
-			if ac.Spec.Components[i].ComponentName == newComp.Name {
-				ac.Spec.Components[i].RevisionName = revisionName
-				ac.Spec.Components[i].ComponentName = ""
+		if len(comp.PackagedWorkloadResources) != 0 {
+			if _, err := d.Dispatch(ctx, comp.PackagedWorkloadResources); err != nil {
+				return errors.WithMessage(err, "cannot dispatch packaged workload resources")
 			}
 		}
+		if comp.InsertConfigNotReady {
+			continue
+		}
 	}
-
-	if err := h.createOrUpdateAppConfig(ctx, ac); err != nil {
-		return err
+	a := assemble.NewAppManifests(appRev).WithWorkloadOption(assemble.DiscoveryHelmBasedWorkload(ctx, h.r.Client))
+	manifests, err := a.AssembledManifests()
+	if err != nil {
+		return errors.WithMessage(err, "cannot assemble application manifests")
 	}
-
+	if _, err := d.EndAndGC(latestTracker).Dispatch(ctx, manifests); err != nil {
+		return errors.WithMessage(err, "cannot dispatch application manifests")
+	}
 	return nil
 }
 
-func (h *appHandler) statusAggregate(appfile *appfile.Appfile) ([]v1alpha2.ApplicationComponentStatus, bool, error) {
-	var appStatus []v1alpha2.ApplicationComponentStatus
+func (h *AppHandler) aggregateHealthStatus(appFile *appfile.Appfile) ([]common.ApplicationComponentStatus, bool, error) {
+	var appStatus []common.ApplicationComponentStatus
 	var healthy = true
-	for _, wl := range appfile.Workloads {
-		var status = v1alpha2.ApplicationComponentStatus{
-			Name:    wl.Name,
-			Healthy: true,
+	for _, wl := range appFile.Workloads {
+		var status = common.ApplicationComponentStatus{
+			Name:               wl.Name,
+			WorkloadDefinition: wl.FullTemplate.Reference.Definition,
+			Healthy:            true,
 		}
-		pCtx := process.NewContext(wl.Name, appfile.Name, appfile.RevisionName)
-		if err := wl.EvalContext(pCtx); err != nil {
-			return nil, false, errors.WithMessagef(err, "app=%s, comp=%s, evaluate context error", appfile.Name, wl.Name)
+
+		var (
+			outputSecretName string
+			err              error
+			pCtx             process.Context
+		)
+
+		// this can help detect the componentManifest not ready and reconcile again
+		if wl.ConfigNotReady {
+			status.Healthy = false
+			status.Message = "secrets or configs not ready"
+			appStatus = append(appStatus, status)
+			healthy = false
+			continue
 		}
+		if wl.IsSecretProducer() {
+			outputSecretName, err = appfile.GetOutputSecretNames(wl)
+			if err != nil {
+				return nil, false, errors.WithMessagef(err, "app=%s, comp=%s, setting outputSecretName error", appFile.Name, wl.Name)
+			}
+			pCtx.InsertSecrets(outputSecretName, wl.RequiredSecrets)
+		}
+
+		switch wl.CapabilityCategory {
+		case types.TerraformCategory:
+			pCtx = appfile.NewBasicContext(wl, appFile.Name, appFile.RevisionName, appFile.Namespace)
+			ctx := context.Background()
+			var configuration terraformapi.Configuration
+			if err := h.r.Client.Get(ctx, client.ObjectKey{Name: wl.Name, Namespace: h.app.Namespace}, &configuration); err != nil {
+				return nil, false, errors.WithMessagef(err, "app=%s, comp=%s, check health error", appFile.Name, wl.Name)
+			}
+			if configuration.Status.State != terraformtypes.Available {
+				healthy = false
+				status.Healthy = false
+			} else {
+				status.Healthy = true
+			}
+			status.Message = configuration.Status.Message
+		default:
+			pCtx = process.NewContext(h.app.Namespace, wl.Name, appFile.Name, appFile.RevisionName)
+			if !h.isNewRevision && wl.CapabilityCategory != types.CUECategory {
+				templateStr, err := appfile.GenerateCUETemplate(wl)
+				if err != nil {
+					return nil, false, err
+				}
+				wl.FullTemplate.TemplateStr = templateStr
+			}
+
+			if err := wl.EvalContext(pCtx); err != nil {
+				return nil, false, errors.WithMessagef(err, "app=%s, comp=%s, evaluate context error", appFile.Name, wl.Name)
+			}
+			workloadHealth, err := wl.EvalHealth(pCtx, h.r, h.app.Namespace)
+			if err != nil {
+				return nil, false, errors.WithMessagef(err, "app=%s, comp=%s, check health error", appFile.Name, wl.Name)
+			}
+			if !workloadHealth {
+				// TODO(wonderflow): we should add a custom way to let the template say why it's unhealthy, only a bool flag is not enough
+				status.Healthy = false
+				healthy = false
+			}
+
+			status.Message, err = wl.EvalStatus(pCtx, h.r, h.app.Namespace)
+			if err != nil {
+				return nil, false, errors.WithMessagef(err, "app=%s, comp=%s, evaluate workload status message error", appFile.Name, wl.Name)
+			}
+		}
+
+		var traitStatusList []common.ApplicationTraitStatus
 		for _, tr := range wl.Traits {
 			if err := tr.EvalContext(pCtx); err != nil {
-				return nil, false, errors.WithMessagef(err, "app=%s, comp=%s, trait=%s, evaluate context error", appfile.Name, wl.Name, tr.Name)
+				return nil, false, errors.WithMessagef(err, "app=%s, comp=%s, trait=%s, evaluate context error", appFile.Name, wl.Name, tr.Name)
 			}
-		}
 
-		workloadHealth, err := wl.EvalHealth(pCtx, h.r, h.app.Namespace)
-		if err != nil {
-			return nil, false, errors.WithMessagef(err, "app=%s, comp=%s, check health error", appfile.Name, wl.Name)
-		}
-		if !workloadHealth {
-			// TODO(wonderflow): we should add a custom way to let the template say why it's unhealthy, only a bool flag is not enough
-			status.Healthy = false
-			healthy = false
-		}
-
-		status.Message, err = wl.EvalStatus(pCtx, h.r, h.app.Namespace)
-		if err != nil {
-			return nil, false, errors.WithMessagef(err, "app=%s, comp=%s, evaluate workload status message error", appfile.Name, wl.Name)
-		}
-		var traitStatusList []v1alpha2.ApplicationTraitStatus
-		for _, trait := range wl.Traits {
-			var traitStatus = v1alpha2.ApplicationTraitStatus{
-				Type:    trait.Name,
+			var traitStatus = common.ApplicationTraitStatus{
+				Type:    tr.Name,
 				Healthy: true,
 			}
-			traitHealth, err := trait.EvalHealth(pCtx, h.r, h.app.Namespace)
+			traitHealth, err := tr.EvalHealth(pCtx, h.r, h.app.Namespace)
 			if err != nil {
-				return nil, false, errors.WithMessagef(err, "app=%s, comp=%s, trait=%s, check health error", appfile.Name, wl.Name, trait.Name)
+				return nil, false, errors.WithMessagef(err, "app=%s, comp=%s, trait=%s, check health error", appFile.Name, wl.Name, tr.Name)
 			}
 			if !traitHealth {
 				// TODO(wonderflow): we should add a custom way to let the template say why it's unhealthy, only a bool flag is not enough
 				traitStatus.Healthy = false
 				healthy = false
 			}
-			traitStatus.Message, err = trait.EvalStatus(pCtx, h.r, h.app.Namespace)
+			traitStatus.Message, err = tr.EvalStatus(pCtx, h.r, h.app.Namespace)
 			if err != nil {
-				return nil, false, errors.WithMessagef(err, "app=%s, comp=%s, trait=%s, evaluate status message error", appfile.Name, wl.Name, trait.Name)
+				return nil, false, errors.WithMessagef(err, "app=%s, comp=%s, trait=%s, evaluate status message error", appFile.Name, wl.Name, tr.Name)
 			}
 			traitStatusList = append(traitStatusList, traitStatus)
 		}
+
 		status.Traits = traitStatusList
+		status.Scopes = generateScopeReference(wl.Scopes)
 		appStatus = append(appStatus, status)
 	}
 	return appStatus, healthy, nil
 }
 
-// createOrUpdateComponent creates a component if not exist and update if exists.
-// it returns the corresponding component revisionName and if a new component revision is created
-func (h *appHandler) createOrUpdateComponent(ctx context.Context, comp *v1alpha2.Component) (string, error) {
-	curComp := v1alpha2.Component{}
-	var preRevisionName, curRevisionName string
-	compName := comp.GetName()
-	compNameSpace := comp.GetNamespace()
-	compKey := ctypes.NamespacedName{Name: compName, Namespace: compNameSpace}
-
-	err := h.r.Get(ctx, compKey, &curComp)
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			return "", err
-		}
-		if err = h.r.Create(ctx, comp); err != nil {
-			return "", err
-		}
-		h.logger.Info("Created a new component", "component name", comp.GetName())
-	} else {
-		// remember the revision if there is a previous component
-		if curComp.Status.LatestRevision != nil {
-			preRevisionName = curComp.Status.LatestRevision.Name
-		}
-		comp.ResourceVersion = curComp.ResourceVersion
-		if err := h.r.Update(ctx, comp); err != nil {
-			return "", err
-		}
-		h.logger.Info("Updated a component", "component name", comp.GetName())
+func generateScopeReference(scopes []appfile.Scope) []runtimev1alpha1.TypedReference {
+	var references []runtimev1alpha1.TypedReference
+	for _, scope := range scopes {
+		references = append(references, runtimev1alpha1.TypedReference{
+			APIVersion: scope.GVK.GroupVersion().String(),
+			Kind:       scope.GVK.Kind,
+			Name:       scope.Name,
+		})
 	}
-	// remove the object from the raw extension before we can compare with the existing componentRevision whose
-	// object is persisted as Raw data after going through api server
-	updatedComp := comp.DeepCopy()
-	updatedComp.Spec.Workload.Object = nil
-	if len(preRevisionName) != 0 {
-		needNewRevision, err := utils.CompareWithRevision(ctx, h.r,
-			logging.NewLogrLogger(h.logger), compName, compNameSpace, preRevisionName, &updatedComp.Spec)
-		if err != nil {
-			return "", errors.Wrap(err, fmt.Sprintf("compare with existing controllerRevision %s failed",
-				preRevisionName))
-		}
-		if !needNewRevision {
-			h.logger.Info("no need to wait for a new component revision", "component name", updatedComp.GetName(),
-				"revision", preRevisionName)
-			return preRevisionName, nil
-		}
-	}
-	h.logger.Info("wait for a new component revision", "component name", compName,
-		"previous revision", preRevisionName)
-	// get the new component revision that contains the component with retry
-	checkForRevision := func() (bool, error) {
-		if err := h.r.Get(ctx, compKey, &curComp); err != nil {
-			// retry no matter what
-			return false, nil
-		}
-		if curComp.Status.LatestRevision == nil || curComp.Status.LatestRevision.Name == preRevisionName {
-			return false, nil
-		}
-		needNewRevision, err := utils.CompareWithRevision(ctx, h.r, logging.NewLogrLogger(h.logger), compName,
-			compNameSpace, curComp.Status.LatestRevision.Name, &updatedComp.Spec)
-		if err != nil {
-			// retry no matter what
-			return false, nil
-		}
-		// end the loop if we find the revision
-		if !needNewRevision {
-			curRevisionName = curComp.Status.LatestRevision.Name
-			h.logger.Info("get a matching component revision", "component name", compName,
-				"current revision", curRevisionName)
-		}
-		return !needNewRevision, nil
-	}
-	if err := wait.ExponentialBackoff(utils.DefaultBackoff, checkForRevision); err != nil {
-		return "", err
-	}
-	return curRevisionName, nil
+	return references
 }
 
-// createOrUpdateAppConfig will find the latest revision of the AC according
-// it will create a new revision if the appConfig is different from the existing one
-func (h *appHandler) createOrUpdateAppConfig(ctx context.Context, appConfig *v1alpha2.ApplicationConfiguration) error {
-	var curAppConfig v1alpha2.ApplicationConfiguration
-	// compute a hash value of the appConfig spec
-	specHash, err := hashstructure.Hash(appConfig.Spec, hashstructure.FormatV2, nil)
-	if err != nil {
-		return err
+type garbageCollectFunc func(ctx context.Context, h *AppHandler) error
+
+// execute garbage collection functions, including:
+// - clean up legacy app revisions
+// - clean up legacy component revisions
+func garbageCollection(ctx context.Context, h *AppHandler) error {
+	collectFuncs := []garbageCollectFunc{
+		garbageCollectFunc(cleanUpApplicationRevision),
+		garbageCollectFunc(cleanUpComponentRevision),
 	}
-	specHashLabel := strconv.FormatUint(specHash, 16)
-	appConfig.SetLabels(oamutil.MergeMapOverrideWithDst(appConfig.GetLabels(),
-		map[string]string{
-			oam.LabelAppConfigHash: specHashLabel,
-		}))
-	// first time ever
-	if h.app.Status.LatestRevision == nil {
-		h.logger.Info("create the first appConfig", "application name", h.app.GetName())
-		return h.createNewAppConfig(ctx, appConfig)
-	}
-	// get the AC with the last revision name stored in the application
-	key := ctypes.NamespacedName{Name: h.app.Status.LatestRevision.Name, Namespace: h.app.Namespace}
-	if err := h.r.Get(ctx, key, &curAppConfig); err != nil {
-		if !apierrors.IsNotFound(err) {
+	for _, collectFunc := range collectFuncs {
+		if err := collectFunc(ctx, h); err != nil {
 			return err
 		}
-		h.logger.Info("create a new appConfig that the last creation failed to create", "application name",
-			h.app.GetName(), "latest revision that does not exist", h.app.Status.LatestRevision.Name)
-		return h.createNewAppConfig(ctx, appConfig)
 	}
-	// check if the old AC has the same HASH value first, just replace lable/annotation if that's the case
-	if curAppConfig.GetLabels()[oam.LabelAppConfigHash] == appConfig.GetLabels()[oam.LabelAppConfigHash] {
-		// Just to be safe that it's not because of a random Hash collision
-		if apiequality.Semantic.DeepEqual(&curAppConfig.Spec, &appConfig.Spec) {
-			// same spec, no need to create another AC, still need to update the AC to apply label/annotation
-			h.logger.Info("update latest application config", "application name",
-				h.app.GetName(), "latest revision to be updated", h.app.Status.LatestRevision.Name)
-			oamutil.PassLabelAndAnnotation(appConfig, &curAppConfig)
-			return h.r.Update(ctx, &curAppConfig)
-		}
-		h.logger.Info("encountered a different app spec with same hash", "current spec",
-			curAppConfig.Spec, "new appConfig spec", appConfig.Spec)
-	}
-	nextRevisionName, _ := utils.GetAppNextRevision(h.app)
-	if nextRevisionName == h.app.Status.LatestRevision.Name {
-		// we don't need to create another appConfig
-		h.logger.Info("replace the existing application config", "application name",
-			h.app.GetName(), "latest revision to be replaced", h.app.Status.LatestRevision.Name, "new hash value", specHashLabel)
-		appConfig.ResourceVersion = curAppConfig.ResourceVersion
-		appConfig.Name = nextRevisionName
-		h.app.Status.LatestRevision.RevisionHash = specHashLabel
-
-		// record that last appConfig we created first in the app's status
-		// make sure that we persist the latest revision first
-		if err := h.r.UpdateStatus(ctx, h.app); err != nil {
-			return err
-		}
-		// it ok if the update fails, we will update again in the next loop
-		return h.r.Update(ctx, appConfig)
-	}
-
-	// create the next version
-	h.logger.Info("create a new appConfig", "application name", h.app.GetName(),
-		"latest revision that does not match the appConfig", h.app.Status.LatestRevision.Name)
-	return h.createNewAppConfig(ctx, appConfig)
+	return nil
 }
 
-// create a new appConfig given the latest revision in the application
-func (h *appHandler) createNewAppConfig(ctx context.Context, appConfig *v1alpha2.ApplicationConfiguration) error {
-	revisionName, nextRevision := utils.GetAppNextRevision(h.app)
-	// update the next revision in the application's status
-	h.app.Status.LatestRevision = &v1alpha2.Revision{
-		Name:         revisionName,
-		Revision:     nextRevision,
-		RevisionHash: appConfig.GetLabels()[oam.LabelAppConfigHash],
-	}
-	appConfig.Name = revisionName
-	// indicate that the applicationConfig is created if we are doing rolling out
-	if _, exist := h.app.GetAnnotations()[oam.AnnotationAppRollout]; exist || h.app.Spec.RolloutPlan != nil {
-		h.logger.Info(fmt.Sprintf("The application %s rolling out is controlled by a rollout plan", h.app.Name))
-		appConfig.SetAnnotations(oamutil.MergeMapOverrideWithDst(appConfig.GetAnnotations(), map[string]string{
-			oam.AnnotationAppRollout: strconv.FormatBool(true),
-		}))
+func (h *AppHandler) handleRollout(ctx context.Context) (reconcile.Result, error) {
+	var comps []string
+	for _, component := range h.app.Spec.Components {
+		comps = append(comps, component.Name)
+		// TODO rollout only support one component now, and we only rollout the first component in Application
+		break
 	}
 
-	// record that last appConfig we created first in the app's status
-	// make sure that we persist the latest revision first
-	if err := h.r.UpdateStatus(ctx, h.app); err != nil {
-		return err
+	// targetRevision should always points to LatestRevison
+	targetRevision := h.app.Status.LatestRevision.Name
+	var srcRevision string
+	target, _ := oamutil.ExtractRevisionNum(targetRevision, "-")
+	// if target == 1 this is a initial scale operation, sourceRevision should be empty
+	// otherwise source revision always is targetRevision - 1
+	if target > 1 {
+		srcRevision = utils.ConstructRevisionName(h.app.Name, int64(target-1))
 	}
-	h.logger.Info("recorded the latest appConfig revision", "application name", h.app.GetName(),
-		"latest revision", revisionName)
-	// it ok if the create failed, we will create again in  the next loop
-	return h.r.Create(ctx, appConfig)
+
+	appRollout := v1beta1.AppRollout{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: v1beta1.SchemeGroupVersion.String(),
+			Kind:       v1beta1.ApplicationKind,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      h.app.Name,
+			Namespace: h.app.Namespace,
+			UID:       h.app.UID,
+		},
+		Spec: v1beta1.AppRolloutSpec{
+			SourceAppRevisionName: srcRevision,
+			TargetAppRevisionName: targetRevision,
+			ComponentList:         comps,
+			RolloutPlan:           *h.app.Spec.RolloutPlan,
+		},
+		Status: h.app.Status.Rollout,
+	}
+
+	// construct a fake rollout object and call rollout.DoReconcile
+	r := applicationrollout.NewReconciler(h.r.Client, h.r.dm, h.r.Recorder, h.r.Scheme)
+	res, err := r.DoReconcile(ctx, &appRollout)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+
+	// write back rollout status to application
+	h.app.Status.Rollout = appRollout.Status
+	return res, nil
 }

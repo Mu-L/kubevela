@@ -1,3 +1,19 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package e2e
 
 import (
@@ -34,7 +50,6 @@ var _ = ginkgo.Describe("Test Vela Application", func() {
 	e2e.JsonAppFileContext("deploy app-basic", appbasicJsonAppFile)
 	e2e.JsonAppFileContext("update app-basic, add scaler trait with replicas 2", appbasicAddTraitJsonAppFile)
 	e2e.ComponentListContext("ls", applicationName, workloadType, traitAlias)
-	ApplicationShowContext("show", applicationName, workloadType)
 	ApplicationStatusContext("status", applicationName, workloadType)
 	ApplicationStatusDeeplyContext("status", applicationName, workloadType, envName)
 	ApplicationExecContext("exec -- COMMAND", applicationName)
@@ -71,33 +86,11 @@ var ApplicationStatusDeeplyContext = func(context string, applicationName, workl
 				return app.Status.LatestRevision != nil
 			}, 180*time.Second, 1*time.Second).Should(gomega.BeTrue())
 
-			ginkgo.By("check AppConfig reconciled ready")
-			gomega.Eventually(func() int {
-				appConfig := &v1alpha2.ApplicationConfiguration{}
-				_ = k8sclient.Get(context2.Background(), client.ObjectKey{
-					Name:      app.Status.LatestRevision.Name,
-					Namespace: "default"}, appConfig)
-				return len(appConfig.Status.Workloads)
-			}, 180*time.Second, 1*time.Second).ShouldNot(gomega.Equal(0))
-
 			cli := fmt.Sprintf("vela status %s", applicationName)
 			output, err := e2e.LongTimeExec(cli, 120*time.Second)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(output).To(gomega.ContainSubstring("Checking health status"))
 			// TODO(zzxwill) need to check workloadType after app status is refined
-		})
-	})
-}
-
-var ApplicationShowContext = func(context string, applicationName string, workloadType string) bool {
-	return ginkgo.Context(context, func() {
-		ginkgo.It("should show app information", func() {
-			cli := fmt.Sprintf("vela show %s", applicationName)
-			output, err := e2e.Exec(cli)
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			// TODO(zzxwill) need to check workloadType after app show is refined
-			//gomega.Expect(output).To(gomega.ContainSubstring(workloadType))
-			gomega.Expect(output).To(gomega.ContainSubstring(applicationName))
 		})
 	})
 }
@@ -155,6 +148,10 @@ var ApplicationInitIntercativeCliContext = func(context string, appName string, 
 						a: "mysvc",
 					},
 					{
+						q: "If addRevisionLabel is true, the appRevision label will be added to the underlying pods (optional, default is false):",
+						a: "N",
+					},
+					{
 						q: "Which image would you like to use for your service ",
 						a: "nginx:latest",
 					},
@@ -163,8 +160,16 @@ var ApplicationInitIntercativeCliContext = func(context string, appName string, 
 						a: "",
 					},
 					{
+						q: "Specify image pull policy for your service ",
+						a: "Always",
+					},
+					{
 						q: "Number of CPU units for the service, like `0.5` (0.5 CPU core), `1` (1 CPU core) (optional):",
 						a: "0.5",
+					},
+					{
+						q: "Specifies the attributes of the memory resource required for the container. (optional):",
+						a: "200M",
 					},
 				}
 				for _, qa := range data {

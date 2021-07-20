@@ -19,18 +19,29 @@ package controller
 import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	"github.com/oam-dev/kubevela/pkg/controller/standard.oam.dev/v1alpha1/rollout"
+
+	controller "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
+	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1alpha2/core/scopes/healthscope"
+	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1alpha2/core/traits/manualscalertrait"
+	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1alpha2/core/workloads/containerizedworkload"
+
 	"github.com/oam-dev/kubevela/pkg/controller/common"
 	"github.com/oam-dev/kubevela/pkg/controller/standard.oam.dev/v1alpha1/podspecworkload"
 	"github.com/oam-dev/kubevela/pkg/controller/utils"
 )
 
 // Setup workload controllers.
-func Setup(mgr ctrl.Manager, disableCaps string) error {
-	var functions []func(ctrl.Manager) error
+func Setup(mgr ctrl.Manager, disableCaps string, args controller.Args) error {
+	var functions []func(ctrl.Manager, controller.Args) error
 	switch disableCaps {
 	case common.DisableNoneCaps:
-		functions = []func(ctrl.Manager) error{
+		functions = []func(ctrl.Manager, controller.Args) error{
 			podspecworkload.Setup,
+			manualscalertrait.Setup,
+			containerizedworkload.Setup,
+			healthscope.Setup,
+			rollout.Setup,
 		}
 	case common.DisableAllCaps:
 	default:
@@ -38,10 +49,22 @@ func Setup(mgr ctrl.Manager, disableCaps string) error {
 		if !disableCapsSet.Contains(common.PodspecWorkloadControllerName) {
 			functions = append(functions, podspecworkload.Setup)
 		}
+		if !disableCapsSet.Contains(common.ManualScalerTraitControllerName) {
+			functions = append(functions, manualscalertrait.Setup)
+		}
+		if !disableCapsSet.Contains(common.ContainerizedWorkloadControllerName) {
+			functions = append(functions, containerizedworkload.Setup)
+		}
+		if !disableCapsSet.Contains(common.HealthScopeControllerName) {
+			functions = append(functions, healthscope.Setup)
+		}
+		if !disableCapsSet.Contains(common.RolloutControllerName) {
+			functions = append(functions, rollout.Setup)
+		}
 	}
 
 	for _, setup := range functions {
-		if err := setup(mgr); err != nil {
+		if err := setup(mgr, args); err != nil {
 			return err
 		}
 	}

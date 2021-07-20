@@ -1,3 +1,19 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package common
 
 import (
@@ -22,11 +38,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	corev1alpha2 "github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
+	corev1beta1 "github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
-	"github.com/oam-dev/kubevela/pkg/controller/utils"
 	"github.com/oam-dev/kubevela/pkg/oam"
-	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 	oamutil "github.com/oam-dev/kubevela/pkg/oam/util"
+	"github.com/oam-dev/kubevela/pkg/utils/apply"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
 	"github.com/oam-dev/kubevela/references/apiserver/apis"
@@ -56,7 +72,7 @@ type AppfileOptions struct {
 // BuildResult is the export struct from AppFile yaml or AppFile object
 type BuildResult struct {
 	appFile     *api.AppFile
-	application *corev1alpha2.Application
+	application *corev1beta1.Application
 	scopes      []oam.Object
 }
 
@@ -94,25 +110,33 @@ type DeleteOptions struct {
 	CompName string
 	Client   client.Client
 	Env      *types.EnvMeta
-	C        types.Args
+	C        common.Args
 }
 
 // ListApplications lists all applications
 func ListApplications(ctx context.Context, c client.Reader, opt Option) ([]apis.ApplicationMeta, error) {
 	var applicationMetaList applicationMetaList
-	appConfigList, err := ListApplicationConfigurations(ctx, c, opt)
-	if err != nil {
-		return nil, err
+	var appList corev1beta1.ApplicationList
+	if opt.AppName != "" {
+		var app corev1beta1.Application
+		if err := c.Get(ctx, client.ObjectKey{Name: opt.AppName, Namespace: opt.Namespace}, &app); err != nil {
+			return applicationMetaList, err
+		}
+		appList.Items = append(appList.Items, app)
+	} else {
+		err := c.List(ctx, &appList, &client.ListOptions{Namespace: opt.Namespace})
+		if err != nil {
+			return applicationMetaList, err
+		}
 	}
-
-	for _, a := range appConfigList.Items {
+	for _, a := range appList.Items {
 		// ignore the deleted resource
 		if a.GetDeletionGracePeriodSeconds() != nil {
 			continue
 		}
 		applicationMeta, err := RetrieveApplicationStatusByName(ctx, c, a.Name, a.Namespace)
 		if err != nil {
-			return applicationMetaList, nil
+			return applicationMetaList, err
 		}
 		applicationMeta.Components = nil
 		applicationMetaList = append(applicationMetaList, applicationMeta)
@@ -173,34 +197,14 @@ func ListComponents(ctx context.Context, c client.Reader, opt Option) ([]apis.Co
 func RetrieveApplicationStatusByName(ctx context.Context, c client.Reader, applicationName string,
 	namespace string) (apis.ApplicationMeta, error) {
 	var applicationMeta apis.ApplicationMeta
-	var appConfig corev1alpha2.ApplicationConfiguration
-	if err := c.Get(ctx, client.ObjectKey{Name: applicationName, Namespace: namespace}, &appConfig); err != nil {
+	var app corev1beta1.Application
+	if err := c.Get(ctx, client.ObjectKey{Name: applicationName, Namespace: namespace}, &app); err != nil {
 		return applicationMeta, err
 	}
+	applicationMeta.Name = app.Name
+	applicationMeta.Status = string(app.Status.Phase)
+	applicationMeta.CreatedTime = app.CreationTimestamp.Format(time.RFC3339)
 
-	var status = "Unknown"
-	if len(appConfig.Status.Conditions) != 0 {
-		status = string(appConfig.Status.Conditions[0].Status)
-	}
-	applicationMeta.Name = appConfig.Name
-	applicationMeta.Status = status
-	applicationMeta.CreatedTime = appConfig.CreationTimestamp.Format(time.RFC3339)
-
-	for _, com := range appConfig.Spec.Components {
-		component, revisionName, err := oamutil.GetComponent(ctx, c, com, namespace)
-		if err != nil {
-			return applicationMeta, err
-		}
-
-		applicationMeta.Components = append(applicationMeta.Components, apis.ComponentMeta{
-			Name:     utils.ExtractComponentName(revisionName),
-			Status:   status,
-			Workload: component.Spec.Workload,
-			Traits:   com.Traits,
-		})
-		applicationMeta.Status = status
-
-	}
 	return applicationMeta, nil
 }
 
@@ -210,7 +214,7 @@ func (o *DeleteOptions) DeleteApp() (string, error) {
 		return "", err
 	}
 	ctx := context.Background()
-	var app = new(corev1alpha2.Application)
+	var app = new(corev1beta1.Application)
 	err := o.Client.Get(ctx, client.ObjectKey{Name: o.AppName, Namespace: o.Env.Namespace}, app)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -362,7 +366,7 @@ func saveAndLoadRemoteAppfile(url string) (*api.AppFile, error) {
 }
 
 // ExportFromAppFile exports Application from appfile object
-func (o *AppfileOptions) ExportFromAppFile(app *api.AppFile, namespace string, quiet bool, c types.Args) (*BuildResult, []byte, error) {
+func (o *AppfileOptions) ExportFromAppFile(app *api.AppFile, namespace string, quiet bool, c common.Args) (*BuildResult, []byte, error) {
 	tm, err := template.Load(namespace, c)
 	if err != nil {
 		return nil, nil, err
@@ -404,7 +408,7 @@ func (o *AppfileOptions) ExportFromAppFile(app *api.AppFile, namespace string, q
 }
 
 // Export export Application object from the path of Appfile
-func (o *AppfileOptions) Export(filePath, namespace string, quiet bool, c types.Args) (*BuildResult, []byte, error) {
+func (o *AppfileOptions) Export(filePath, namespace string, quiet bool, c common.Args) (*BuildResult, []byte, error) {
 	var app *api.AppFile
 	var err error
 	if !quiet {
@@ -430,20 +434,16 @@ func (o *AppfileOptions) Export(filePath, namespace string, quiet bool, c types.
 }
 
 // Run starts an application according to Appfile
-func (o *AppfileOptions) Run(filePath, namespace string, c types.Args) error {
+func (o *AppfileOptions) Run(filePath, namespace string, c common.Args) error {
 	result, data, err := o.Export(filePath, namespace, false, c)
 	if err != nil {
 		return err
 	}
-	dm, err := discoverymapper.New(c.Config)
-	if err != nil {
-		return err
-	}
-	return o.BaseAppFileRun(result, data, dm)
+	return o.BaseAppFileRun(result, data, c)
 }
 
 // BaseAppFileRun starts an application according to Appfile
-func (o *AppfileOptions) BaseAppFileRun(result *BuildResult, data []byte, dm discoverymapper.DiscoveryMapper) error {
+func (o *AppfileOptions) BaseAppFileRun(result *BuildResult, data []byte, args common.Args) error {
 	deployFilePath := ".vela/deploy.yaml"
 	o.IO.Infof("Writing deploy config to (%s)\n", deployFilePath)
 	if err := os.MkdirAll(filepath.Dir(deployFilePath), 0700); err != nil {
@@ -458,7 +458,7 @@ func (o *AppfileOptions) BaseAppFileRun(result *BuildResult, data []byte, dm dis
 		return errors.Wrap(err, "save to app dir failed")
 	}
 
-	kubernetesComponent, err := appfile.ApplyTerraform(result.application, o.Kubecli, o.IO, o.Env.Namespace, dm)
+	kubernetesComponent, err := appfile.ApplyTerraform(result.application, o.Kubecli, o.IO, o.Env.Namespace, args)
 	if err != nil {
 		return err
 	}
@@ -478,13 +478,13 @@ func (o *AppfileOptions) saveToAppDir(f *api.AppFile) error {
 // - for create, it displays app status along with information of url, metrics, ssh, logging.
 // - for update, it rolls out a canary deployment and prints its information. User can verify the canary deployment.
 //   This will wait for user approval. If approved, it continues upgrading the whole; otherwise, it would rollback.
-func (o *AppfileOptions) ApplyApp(app *corev1alpha2.Application, scopes []oam.Object) error {
+func (o *AppfileOptions) ApplyApp(app *corev1beta1.Application, scopes []oam.Object) error {
 	key := apitypes.NamespacedName{
 		Namespace: app.Namespace,
 		Name:      app.Name,
 	}
 	o.IO.Infof("Checking if app has been deployed...\n")
-	var tmpApp corev1alpha2.Application
+	var tmpApp corev1beta1.Application
 	err := o.Kubecli.Get(context.TODO(), key, &tmpApp)
 	switch {
 	case apierrors.IsNotFound(err):
@@ -501,7 +501,7 @@ func (o *AppfileOptions) ApplyApp(app *corev1alpha2.Application, scopes []oam.Ob
 	return nil
 }
 
-func (o *AppfileOptions) apply(app *corev1alpha2.Application, scopes []oam.Object) error {
+func (o *AppfileOptions) apply(app *corev1beta1.Application, scopes []oam.Object) error {
 	if err := appfile.Run(context.TODO(), o.Kubecli, app, scopes); err != nil {
 		return err
 	}
@@ -509,7 +509,7 @@ func (o *AppfileOptions) apply(app *corev1alpha2.Application, scopes []oam.Objec
 }
 
 // Info shows the status of each service in the Appfile
-func (o *AppfileOptions) Info(app *corev1alpha2.Application) string {
+func (o *AppfileOptions) Info(app *corev1beta1.Application) string {
 	appName := app.Name
 	var appUpMessage = "✅ App has been deployed 🚀🚀🚀\n" +
 		fmt.Sprintf("    Port forward: vela port-forward %s\n", appName) +
@@ -520,4 +520,25 @@ func (o *AppfileOptions) Info(app *corev1alpha2.Application) string {
 		appUpMessage += fmt.Sprintf("  Service status: vela status %s --svc %s\n", appName, comp.Name)
 	}
 	return appUpMessage
+}
+
+// ApplyApplication will apply an application file in K8s GVK format
+func ApplyApplication(app corev1beta1.Application, ioStream cmdutil.IOStreams, clt client.Client) error {
+	if app.Namespace == "" {
+		app.Namespace = types.DefaultAppNamespace
+	}
+	_, err := ioStream.Out.Write([]byte("Applying an application in K8S format...\n"))
+	if err != nil {
+		return err
+	}
+	applicator := apply.NewAPIApplicator(clt)
+	err = applicator.Apply(context.Background(), &app)
+	if err != nil {
+		return err
+	}
+	_, err = ioStream.Out.Write([]byte("Successfully apply application"))
+	if err != nil {
+		return err
+	}
+	return nil
 }

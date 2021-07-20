@@ -1,9 +1,27 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package common
 
 import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/oam-dev/kubevela/pkg/utils/common"
 
 	"cuelang.org/go/cue"
 	"github.com/spf13/pflag"
@@ -28,7 +46,7 @@ type RunOptions struct {
 }
 
 // InitApplication will load Application from cluster
-func InitApplication(env *types.EnvMeta, c types.Args, workloadName string, appGroup string) (*api.Application, error) {
+func InitApplication(env *types.EnvMeta, c common.Args, workloadName string, appGroup string) (*api.Application, error) {
 	var appName string
 	if appGroup != "" {
 		appName = appGroup
@@ -48,7 +66,7 @@ func InitApplication(env *types.EnvMeta, c types.Args, workloadName string, appG
 }
 
 // BaseComplete will construct an Application from cli parameters.
-func BaseComplete(env *types.EnvMeta, c types.Args, workloadName string, appName string, flagSet *pflag.FlagSet, workloadType string) (*api.Application, error) {
+func BaseComplete(env *types.EnvMeta, c common.Args, workloadName string, appName string, flagSet *pflag.FlagSet, workloadType string) (*api.Application, error) {
 	app, err := InitApplication(env, c, workloadName, appName)
 	if err != nil {
 		return nil, err

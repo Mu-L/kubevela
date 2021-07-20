@@ -1,89 +1,121 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package application
 
 import (
 	"context"
-	"math/rand"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ghodss/yaml"
+	terraformtypes "github.com/oam-dev/terraform-controller/api/types"
+	terraformapi "github.com/oam-dev/terraform-controller/api/v1beta1"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-
-	"github.com/crossplane/crossplane-runtime/pkg/logging"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
-	"github.com/oam-dev/kubevela/pkg/controller/utils"
-	"github.com/oam-dev/kubevela/pkg/oam"
-	oamutil "github.com/oam-dev/kubevela/pkg/oam/util"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	velatypes "github.com/oam-dev/kubevela/apis/types"
+	"github.com/oam-dev/kubevela/pkg/appfile"
 )
 
+const workloadDefinition = `
+apiVersion: core.oam.dev/v1beta1
+kind: WorkloadDefinition
+metadata:
+  name: test-worker
+  annotations:
+    definition.oam.dev/description: "Describes long-running, scalable, containerized services that running at backend. They do NOT have network endpoint to receive external network traffic."
+spec:
+  workload:
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+  schematic:
+    cue:
+      template: |
+        output: {
+          apiVersion: "apps/v1"
+          kind:       "Deployment"
+          spec: {
+            selector: matchLabels: {
+              "app.oam.dev/component": context.name
+            }
+            template: {
+              metadata: labels: {
+                "app.oam.dev/component": context.name
+              }
+              spec: {
+                containers: [{
+                  name:  context.name
+                  image: parameter.image
+
+                  if parameter["cmd"] != _|_ {
+                    command: parameter.cmd
+                  }
+                }]
+              }
+            }
+          }
+        }
+        parameter: {
+          image: string
+          cmd?: [...string]
+        }
+`
+
 var _ = Describe("Test Application apply", func() {
-	var handler appHandler
-	var app *v1alpha2.Application
-	var appConfig *v1alpha2.ApplicationConfiguration
+	var app *v1beta1.Application
 	var namespaceName string
-	var componentName string
 	var ns corev1.Namespace
 
 	BeforeEach(func() {
 		ctx := context.TODO()
-		namespaceName = "apply-test-" + strconv.Itoa(rand.Intn(1000))
+		namespaceName = "apply-test-" + strconv.Itoa(time.Now().Second()) + "-" + strconv.Itoa(time.Now().Nanosecond())
 		ns = corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: namespaceName,
 			},
 		}
-		app = &v1alpha2.Application{
+		app = &v1beta1.Application{
 			TypeMeta: metav1.TypeMeta{
 				Kind:       "Application",
-				APIVersion: "core.oam.dev/v1alpha2",
+				APIVersion: "core.oam.dev/v1beta1",
 			},
 		}
 		app.Namespace = namespaceName
-		app.Spec = v1alpha2.ApplicationSpec{
-			Components: []v1alpha2.ApplicationComponent{{
-				WorkloadType: "webservice",
-				Name:         "express-server",
-				Scopes:       map[string]string{"healthscopes.core.oam.dev": "myapp-default-health"},
-				Settings: runtime.RawExtension{
+		app.Spec = v1beta1.ApplicationSpec{
+			Components: []v1beta1.ApplicationComponent{{
+				Type: "test-worker",
+				Name: "test-app",
+				Properties: runtime.RawExtension{
 					Raw: []byte(`{"image": "oamdev/testapp:v1", "cmd": ["node", "server.js"]}`),
-				},
-				Traits: []v1alpha2.ApplicationTrait{{
-					Name: "route",
-					Properties: runtime.RawExtension{
-						Raw: []byte(`{"domain": "example.com", "http":{"/": 8080}}`),
-					},
-				},
 				},
 			}},
 		}
-		handler = appHandler{
-			r:      reconciler,
-			app:    app,
-			logger: reconciler.Log.WithValues("application", "unit-test"),
-		}
-
 		By("Create the Namespace for test")
 		Expect(k8sClient.Create(ctx, &ns)).Should(Succeed())
-
-		appConfig = &v1alpha2.ApplicationConfiguration{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      app.Name,
-				Namespace: namespaceName,
-			},
-			Spec: v1alpha2.ApplicationConfigurationSpec{
-				Components: []v1alpha2.ApplicationConfigurationComponent{
-					{
-						ComponentName: componentName,
-					},
-				},
-			},
-		}
 	})
 
 	AfterEach(func() {
@@ -91,306 +123,93 @@ var _ = Describe("Test Application apply", func() {
 		Expect(k8sClient.Delete(context.TODO(), &ns)).Should(Succeed())
 	})
 
-	It("Test creating applicationConfiguration without revisions", func() {
+	It("Test update or create app revision", func() {
 		ctx := context.TODO()
-		By("[TEST] Test application without AC revision")
-		app.Name = "test-revision"
-		annoKey1 := "testKey1"
-		annoKey2 := "testKey2"
-		Expect(handler.r.Create(ctx, app)).NotTo(HaveOccurred())
-		// Test create or update
-		appConfig := appConfig.DeepCopy()
-		appConfig.SetAnnotations(map[string]string{annoKey1: strconv.FormatBool(true)})
-		err := handler.createOrUpdateAppConfig(ctx, appConfig)
-		Expect(err).ToNot(HaveOccurred())
-		// verify
-		curApp := &v1alpha2.Application{}
-		Eventually(
-			func() error {
-				return handler.r.Get(ctx,
-					types.NamespacedName{Namespace: ns.Name, Name: app.Name},
-					curApp)
-			},
-			time.Second*10, time.Millisecond*500).Should(BeNil())
+		By("[TEST] Create a workload definition")
+		var deployDef v1beta1.WorkloadDefinition
+		Expect(yaml.Unmarshal([]byte(workloadDefinition), &deployDef)).Should(BeNil())
+		deployDef.Namespace = app.Namespace
+		Expect(k8sClient.Create(ctx, &deployDef)).Should(SatisfyAny(BeNil()))
 
-		By("Verify that the application status has the lastRevision name ")
-		Expect(curApp.Status.LatestRevision.Revision).Should(BeEquivalentTo(1))
-		Expect(curApp.Status.LatestRevision.Name).Should(Equal(utils.ConstructRevisionName(app.Name, 1)))
-		curAC := &v1alpha2.ApplicationConfiguration{}
-		Expect(handler.r.Get(ctx,
-			types.NamespacedName{Namespace: ns.Name, Name: utils.ConstructRevisionName(app.Name, 1)},
-			curAC)).NotTo(HaveOccurred())
-		// check that the annotation/labels are correctly applied
-		Expect(curAC.GetAnnotations()[annoKey1]).ShouldNot(BeEmpty())
-		Expect(curAC.GetLabels()[oam.LabelAppConfigHash]).ShouldNot(BeEmpty())
-		hashValue := curAC.GetLabels()[oam.LabelAppConfigHash]
-		Expect(hashValue).ShouldNot(BeEmpty())
-		Expect(curApp.Status.LatestRevision.RevisionHash).Should(Equal(hashValue))
+		By("[TEST] Create a application")
+		app.Name = "poc"
+		err := k8sClient.Create(ctx, app)
+		Expect(err).Should(BeNil())
 
-		By("[TEST] Modify the applicationConfiguration spec, should not lead to a new AC")
-		// update the spec of the AC which should lead to a new AC being created
-		appConfig.Spec.Components[0].Traits = []v1alpha2.ComponentTrait{
-			{
-				Trait: runtime.RawExtension{
-					Object: &v1alpha2.ManualScalerTrait{
-						TypeMeta: metav1.TypeMeta{
-							Kind:       "ManualScalerTrait",
-							APIVersion: "core.oam.dev/v1alpha2",
-						},
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      app.Name,
-							Namespace: namespaceName,
-						},
-					},
-				},
-			},
-		}
-		// this should not lead to a new AC but replace it with a completely different one
-		// the entire annotation should be changed too
-		appConfig.SetAnnotations(map[string]string{annoKey2: strconv.FormatBool(true)})
+		By("[TEST] get a application")
+		reconcileOnceAfterFinalizer(reconciler, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+		testapp := v1beta1.Application{}
+		err = k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &testapp)
+		Expect(err).Should(BeNil())
+		Expect(testapp.Status.LatestRevision != nil).Should(BeTrue())
 
-		err = handler.createOrUpdateAppConfig(ctx, appConfig)
-		Expect(err).ToNot(HaveOccurred())
-		// verify the app latest revision is not changed
-		Eventually(
-			func() error {
-				return handler.r.Get(ctx,
-					types.NamespacedName{Namespace: ns.Name, Name: app.Name},
-					curApp)
-			},
-			time.Second*10, time.Millisecond*500).Should(BeNil())
+		By("[TEST] get a application revision")
+		appRevName := testapp.Status.LatestRevision.Name
+		apprev := &v1beta1.ApplicationRevision{}
+		err = k8sClient.Get(ctx, types.NamespacedName{Name: appRevName, Namespace: app.Namespace}, apprev)
+		Expect(err).Should(BeNil())
 
-		By("Verify that the lastest revision does not change, the hashvalue should though")
-		Expect(curApp.Status.LatestRevision.Revision).Should(BeEquivalentTo(1))
-		Expect(curApp.Status.LatestRevision.Name).Should(Equal(utils.ConstructRevisionName(app.Name, 1)))
-		newHash := curApp.Status.LatestRevision.RevisionHash
-		Expect(newHash).ShouldNot(Equal(hashValue))
-		// check that no new appConfig created
-		Expect(handler.r.Get(ctx, types.NamespacedName{Namespace: ns.Name,
-			Name: utils.ConstructRevisionName(app.Name, 2)}, curAC)).Should(&oamutil.NotFoundMatcher{})
-
-		// check that the new app annotation exist and the hash value has changed
-		updatedAC := v1alpha2.ApplicationConfiguration{}
-		Expect(handler.r.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: curApp.Status.LatestRevision.Name},
-			&updatedAC)).Should(Succeed())
-		Expect(updatedAC.GetAnnotations()[annoKey1]).Should(BeEmpty())
-		Expect(updatedAC.GetAnnotations()[annoKey2]).ShouldNot(BeEmpty())
-		Expect(updatedAC.GetLabels()[oam.LabelAppConfigHash]).ShouldNot(BeEmpty())
-		Expect(updatedAC.GetLabels()[oam.LabelAppConfigHash]).Should(Equal(newHash))
+		By("[TEST] verify that the revision is exist and set correctly")
+		applabel, exist := apprev.Labels["app.oam.dev/name"]
+		Expect(exist).Should(BeTrue())
+		Expect(strings.Compare(applabel, app.Name) == 0).Should(BeTrue())
 	})
+})
 
-	It("Test creating applicationConfiguration revisions", func() {
-		ctx := context.TODO()
-
-		By("[TEST] Test application without AC revision")
-		app.Name = "test-revision"
-		// we want the app to generate new AC revision
-		app.SetAnnotations(map[string]string{oam.AnnotationAppRollout: strconv.FormatBool(true)})
-		Expect(handler.r.Create(ctx, app)).NotTo(HaveOccurred())
-		// Test create or update
-		err := handler.createOrUpdateAppConfig(ctx, appConfig.DeepCopy())
-		Expect(err).ToNot(HaveOccurred())
-		// verify
-		curApp := &v1alpha2.Application{}
-		Eventually(
-			func() error {
-				return handler.r.Get(ctx,
-					types.NamespacedName{Namespace: ns.Name, Name: app.Name},
-					curApp)
-			},
-			time.Second*10, time.Millisecond*500).Should(BeNil())
-
-		By("Verify that the application status has the lastRevision name ")
-		Expect(curApp.Status.LatestRevision.Revision).Should(BeEquivalentTo(1))
-		Expect(curApp.Status.LatestRevision.Name).Should(Equal(utils.ConstructRevisionName(app.Name, 1)))
-		curAC := &v1alpha2.ApplicationConfiguration{}
-		Expect(handler.r.Get(ctx,
-			types.NamespacedName{Namespace: ns.Name, Name: utils.ConstructRevisionName(app.Name, 1)},
-			curAC)).NotTo(HaveOccurred())
-		// check that the annotation/labels are correctly applied
-		Expect(curAC.GetLabels()[oam.LabelAppConfigHash]).ShouldNot(BeEmpty())
-		hashValue := curAC.GetLabels()[oam.LabelAppConfigHash]
-		Expect(hashValue).ShouldNot(BeEmpty())
-		Expect(curApp.Status.LatestRevision.RevisionHash).Should(Equal(hashValue))
-
-		// TODO: verify that label and annotation change will be passed down
-
-		By("[TEST] apply the same appConfig mimic application controller, should do nothing")
-		// this should not lead to a new AC
-		err = handler.createOrUpdateAppConfig(ctx, appConfig.DeepCopy())
-		Expect(err).ToNot(HaveOccurred())
-		// verify the app latest revision is not changed
-		Eventually(
-			func() error {
-				return handler.r.Get(ctx,
-					types.NamespacedName{Namespace: ns.Name, Name: app.Name},
-					curApp)
-			},
-			time.Second*10, time.Millisecond*500).Should(BeNil())
-
-		By("Verify that the lastest revision does not change")
-		Expect(curApp.Status.LatestRevision.Revision).Should(BeEquivalentTo(1))
-		Expect(curApp.Status.LatestRevision.Name).Should(Equal(utils.ConstructRevisionName(app.Name, 1)))
-		Expect(curApp.Status.LatestRevision.RevisionHash).Should(Equal(hashValue))
-		Expect(handler.r.Get(ctx,
-			types.NamespacedName{Namespace: ns.Name, Name: curApp.Status.LatestRevision.Name},
-			curAC)).NotTo(HaveOccurred())
-
-		By("[TEST] Modify the applicationConfiguration mimic AC controller, should only update")
-		// update the status of the AC which is expected after AC controller takes over
-		curAC.Status.SetConditions(readyCondition("newType"))
-		Expect(handler.r.Status().Update(ctx, curAC)).NotTo(HaveOccurred())
-		// set the new AppConfig annotation as false AC controller would do
-		cl := make(map[string]string)
-		cl[oam.AnnotationAppRollout] = strconv.FormatBool(false)
-		curAC.SetAnnotations(cl)
-		Expect(handler.r.Update(ctx, curAC)).NotTo(HaveOccurred())
-		// this should not lead to a new AC
-		err = handler.createOrUpdateAppConfig(ctx, curAC.DeepCopy())
-		Expect(err).ToNot(HaveOccurred())
-		// verify the app latest revision is not changed
-		Eventually(
-			func() error {
-				return handler.r.Get(ctx,
-					types.NamespacedName{Namespace: ns.Name, Name: app.Name},
-					curApp)
-			},
-			time.Second*10, time.Millisecond*500).Should(BeNil())
-
-		By("Verify that the lastest revision does not change")
-		Expect(curApp.Status.LatestRevision.Revision).Should(BeEquivalentTo(1))
-		Expect(curApp.Status.LatestRevision.Name).Should(Equal(utils.ConstructRevisionName(app.Name, 1)))
-		Expect(curApp.Status.LatestRevision.RevisionHash).Should(Equal(hashValue))
-		Expect(handler.r.Get(ctx,
-			types.NamespacedName{Namespace: ns.Name, Name: curApp.Status.LatestRevision.Name},
-			curAC)).NotTo(HaveOccurred())
-		// check that the new app annotation is false
-		Expect(curAC.GetAnnotations()[oam.AnnotationAppRollout]).Should(Equal(strconv.FormatBool(false)))
-		Expect(curAC.GetLabels()[oam.LabelAppConfigHash]).Should(Equal(hashValue))
-		Expect(curAC.GetCondition("newType").Status).Should(BeEquivalentTo(corev1.ConditionTrue))
-		// check that no new appConfig created
-		Expect(handler.r.Get(ctx, types.NamespacedName{Namespace: ns.Name,
-			Name: utils.ConstructRevisionName(app.Name, 2)}, curAC)).Should(&oamutil.NotFoundMatcher{})
-
-		By("[TEST] Modify the applicationConfiguration spec, should lead to a new AC")
-		// update the spec of the AC which should lead to a new AC being created
-		appConfig.Spec.Components[0].Traits = []v1alpha2.ComponentTrait{
-			{
-				Trait: runtime.RawExtension{
-					Object: &v1alpha2.ManualScalerTrait{
-						TypeMeta: metav1.TypeMeta{
-							Kind:       "MetricsTrait",
-							APIVersion: "standard.oam.dev/v1alpha1",
-						},
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      app.Name,
-							Namespace: namespaceName,
-						},
-					},
-				},
-			},
-		}
-		// this should lead to a new AC
-		err = handler.createOrUpdateAppConfig(ctx, appConfig)
-		Expect(err).ToNot(HaveOccurred())
-		// verify the app latest revision is not changed
-		Eventually(
-			func() error {
-				return handler.r.Get(ctx,
-					types.NamespacedName{Namespace: ns.Name, Name: app.Name},
-					curApp)
-			},
-			time.Second*10, time.Millisecond*500).Should(BeNil())
-
-		By("Verify that the lastest revision is advanced")
-		Expect(curApp.Status.LatestRevision.Revision).Should(BeEquivalentTo(2))
-		Expect(curApp.Status.LatestRevision.Name).Should(Equal(app.Name + "-v2"))
-		Expect(curApp.Status.LatestRevision.RevisionHash).ShouldNot(Equal(hashValue))
-
-		// check that the new app annotation exist and the hash value has changed
-		Expect(handler.r.Get(ctx,
-			types.NamespacedName{Namespace: ns.Name, Name: curApp.Status.LatestRevision.Name},
-			curAC)).NotTo(HaveOccurred())
-		Expect(curAC.GetLabels()[oam.LabelAppConfigHash]).ShouldNot(BeEmpty())
-		Expect(curAC.GetLabels()[oam.LabelAppConfigHash]).ShouldNot(Equal(hashValue))
-		// check that no more new appConfig created
-		Expect(handler.r.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: app.Name + "-v3"},
-			curAC)).Should(&oamutil.NotFoundMatcher{})
-	})
-
-	It("Test update or create component", func() {
-		ctx := context.TODO()
-		By("[TEST] Setting up the testing environment")
-		imageV1 := "wordpress:4.6.1-apache"
-		imageV2 := "wordpress:4.6.2-apache"
-		cwV1 := v1alpha2.ContainerizedWorkload{
-			TypeMeta: metav1.TypeMeta{
-				Kind:       "ContainerizedWorkload",
-				APIVersion: "core.oam.dev/v1alpha2",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace: namespaceName,
-			},
-			Spec: v1alpha2.ContainerizedWorkloadSpec{
-				Containers: []v1alpha2.Container{
+var _ = Describe("Test statusAggregate", func() {
+	It("the component is Terraform type", func() {
+		var (
+			ctx           = context.TODO()
+			componentName = "sample-oss"
+			ns            = "default"
+			h             = &AppHandler{r: reconciler, app: &v1beta1.Application{
+				TypeMeta:   metav1.TypeMeta{},
+				ObjectMeta: metav1.ObjectMeta{Namespace: ns},
+			}}
+			appFile = &appfile.Appfile{
+				Workloads: []*appfile.Workload{
 					{
-						Name:  "wordpress",
-						Image: imageV1,
-						Ports: []v1alpha2.ContainerPort{
-							{
-								Name: "wordpress",
-								Port: 80,
+						Name: componentName,
+						FullTemplate: &appfile.Template{
+							Reference: common.WorkloadTypeDescriptor{
+								Definition: common.WorkloadGVK{APIVersion: "v1", Kind: "A1"},
 							},
 						},
+						CapabilityCategory: velatypes.TerraformCategory,
 					},
 				},
-			},
+			}
+		)
+
+		By("aggregate status")
+		statuses, healthy, err := h.aggregateHealthStatus(appFile)
+		Expect(statuses).Should(BeNil())
+		Expect(healthy).Should(Equal(false))
+		Expect(err).Should(HaveOccurred())
+
+		By("create Terraform configuration")
+		configuration := terraformapi.Configuration{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "terraform.core.oam.dev/v1beta1", Kind: "Configuration"},
+			ObjectMeta: metav1.ObjectMeta{Name: componentName, Namespace: ns},
 		}
-		component := &v1alpha2.Component{
-			TypeMeta: metav1.TypeMeta{
-				Kind:       "Component",
-				APIVersion: "core.oam.dev/v1alpha2",
-			}, ObjectMeta: metav1.ObjectMeta{
-				Name:      "myweb",
-				Namespace: namespaceName,
-				Labels:    map[string]string{"application.oam.dev": "test"},
-			},
-			Spec: v1alpha2.ComponentSpec{
-				Workload: runtime.RawExtension{
-					Object: &cwV1,
-				},
-			}}
+		k8sClient.Create(ctx, &configuration)
 
-		By("[TEST] Creating a component the first time")
-		// take a copy so the component's workload still uses object instead of raw data
-		// just like the way we use it in prod. The raw data will be filled by the k8s for some reason.
-		revision, err := handler.createOrUpdateComponent(ctx, component.DeepCopy())
-		By("verify that the revision is the set correctly and newRevision is true")
-		Expect(err).ShouldNot(HaveOccurred())
-		// verify the revision actually contains the right component
-		Expect(utils.CompareWithRevision(ctx, handler.r, logging.NewLogrLogger(handler.logger), component.GetName(),
-			component.GetNamespace(), revision, &component.Spec)).Should(BeTrue())
-		preRevision := revision
+		By("aggregate status again")
+		statuses, healthy, err = h.aggregateHealthStatus(appFile)
+		Expect(len(statuses)).Should(Equal(1))
+		Expect(healthy).Should(Equal(false))
+		Expect(err).Should(BeNil())
 
-		By("[TEST] update the component without any changes (mimic reconcile behavior)")
-		revision, err = handler.createOrUpdateComponent(ctx, component.DeepCopy())
-		By("verify that the revision is the same and newRevision is false")
-		Expect(err).ShouldNot(HaveOccurred())
-		Expect(revision).Should(BeIdenticalTo(preRevision))
+		By("set status for Terraform configuration")
+		var gotConfiguration terraformapi.Configuration
+		k8sClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: componentName}, &gotConfiguration)
+		gotConfiguration.Status.State = terraformtypes.Available
+		k8sClient.Status().Update(ctx, &gotConfiguration)
 
-		By("[TEST] update the component")
-		// modify the component spec through object
-		cwV2 := cwV1.DeepCopy()
-		cwV2.Spec.Containers[0].Image = imageV2
-		component.Spec.Workload.Object = cwV2
-		revision, err = handler.createOrUpdateComponent(ctx, component.DeepCopy())
-		By("verify that the revision is changed and newRevision is true")
-		Expect(err).ShouldNot(HaveOccurred())
-		Expect(revision).ShouldNot(BeIdenticalTo(preRevision))
-		Expect(utils.CompareWithRevision(ctx, handler.r, logging.NewLogrLogger(handler.logger), component.GetName(),
-			component.GetNamespace(), revision, &component.Spec)).Should(BeTrue())
-		// revision increased
-		Expect(strings.Compare(revision, preRevision) > 0).Should(BeTrue())
+		By("aggregate status one more time")
+		statuses, healthy, err = h.aggregateHealthStatus(appFile)
+		Expect(len(statuses)).Should(Equal(1))
+		Expect(healthy).Should(Equal(true))
+		Expect(err).Should(BeNil())
 	})
-
 })

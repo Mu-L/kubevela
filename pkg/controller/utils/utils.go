@@ -1,3 +1,19 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package utils
 
 import (
@@ -9,21 +25,33 @@ import (
 	"strings"
 	"time"
 
+	runtimev1alpha1 "github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
 	"github.com/crossplane/crossplane-runtime/pkg/fieldpath"
-	"github.com/crossplane/crossplane-runtime/pkg/logging"
 	mapset "github.com/deckarep/golang-set"
-	v12 "k8s.io/api/apps/v1"
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	"github.com/ghodss/yaml"
+	"github.com/mitchellh/hashstructure/v2"
+	"github.com/pkg/errors"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	commontypes "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	velatypes "github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/controller/common"
+	"github.com/oam-dev/kubevela/pkg/cue/packages"
 	"github.com/oam-dev/kubevela/pkg/oam"
+	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 )
 
@@ -40,8 +68,8 @@ const LabelPodSpecable = "workload.oam.dev/podspecable"
 
 // allBuiltinCapabilities includes all builtin controllers
 // TODO(zzxwill) needs to automatically discovery all controllers
-var allBuiltinCapabilities = mapset.NewSet(common.MetricsControllerName, common.PodspecWorkloadControllerName,
-	common.RouteControllerName, common.AutoscaleControllerName)
+var allBuiltinCapabilities = mapset.NewSet(common.ManualScalerTraitControllerName, common.PodspecWorkloadControllerName,
+	common.ContainerizedWorkloadControllerName, common.HealthScopeControllerName)
 
 // GetPodSpecPath get podSpec field and label
 func GetPodSpecPath(workloadDef *v1alpha2.WorkloadDefinition) (string, bool) {
@@ -70,7 +98,7 @@ func DiscoveryFromPodSpec(w *unstructured.Unstructured, fieldPath string) ([]int
 	if err != nil {
 		return nil, fmt.Errorf("discovery podSpec from %s in workload %v err %w", fieldPath, w.GetName(), err)
 	}
-	var spec v1.PodSpec
+	var spec corev1.PodSpec
 	err = json.Unmarshal(data, &spec)
 	if err != nil {
 		return nil, fmt.Errorf("discovery podSpec from %s in workload %v err %w", fieldPath, w.GetName(), err)
@@ -92,7 +120,7 @@ func DiscoveryFromPodTemplate(w *unstructured.Unstructured, fields ...string) ([
 	if err != nil {
 		return nil, nil, fmt.Errorf("workload %v convert object err %w", w.GetName(), err)
 	}
-	var spec v1.PodTemplateSpec
+	var spec corev1.PodTemplateSpec
 	err = json.Unmarshal(data, &spec)
 	if err != nil {
 		return nil, nil, fmt.Errorf("workload %v convert object to PodTemplate err %w", w.GetName(), err)
@@ -104,7 +132,7 @@ func DiscoveryFromPodTemplate(w *unstructured.Unstructured, fields ...string) ([
 	return ports, spec.Labels, nil
 }
 
-func getContainerPorts(cs []v1.Container) []intstr.IntOrString {
+func getContainerPorts(cs []corev1.Container) []intstr.IntOrString {
 	var ports []intstr.IntOrString
 	// TODO(wonderflow): exclude some sidecars
 	for _, container := range cs {
@@ -159,19 +187,15 @@ func StoreInSet(disableCaps string) mapset.Set {
 }
 
 // GetAppNextRevision will generate the next revision name and revision number for application
-func GetAppNextRevision(app *v1alpha2.Application) (string, int64) {
+func GetAppNextRevision(app *v1beta1.Application) (string, int64) {
 	if app == nil {
 		// should never happen
 		return "", 0
 	}
 	var nextRevision int64 = 1
 	if app.Status.LatestRevision != nil {
-		// we only bump the version when we are rolling
-		if _, exist := app.GetAnnotations()[oam.AnnotationAppRollout]; exist {
-			nextRevision = app.Status.LatestRevision.Revision + 1
-		} else {
-			nextRevision = app.Status.LatestRevision.Revision
-		}
+		// revision will always bump and increment no matter what the way user is running.
+		nextRevision = app.Status.LatestRevision.Revision + 1
 	}
 	return ConstructRevisionName(app.Name, nextRevision), nextRevision
 }
@@ -183,10 +207,7 @@ func ConstructRevisionName(componentName string, revision int64) string {
 }
 
 // ExtractComponentName will extract the componentName from a revisionName
-func ExtractComponentName(revisionName string) string {
-	splits := strings.Split(revisionName, "-")
-	return strings.Join(splits[0:len(splits)-1], "-")
-}
+var ExtractComponentName = util.ExtractComponentName
 
 // ExtractRevision will extract the revision from a revisionName
 func ExtractRevision(revisionName string) (int, error) {
@@ -196,14 +217,14 @@ func ExtractRevision(revisionName string) (int, error) {
 }
 
 // CompareWithRevision compares a component's spec with the component's latest revision content
-func CompareWithRevision(ctx context.Context, c client.Client, logger logging.Logger, componentName, nameSpace,
+func CompareWithRevision(ctx context.Context, c client.Client, componentName, nameSpace,
 	latestRevision string, curCompSpec *v1alpha2.ComponentSpec) (bool, error) {
-	oldRev := &v12.ControllerRevision{}
+	oldRev := &appsv1.ControllerRevision{}
 	// retry on NotFound since we update the component last revision first
 	err := wait.ExponentialBackoff(retry.DefaultBackoff, func() (bool, error) {
 		err := c.Get(ctx, client.ObjectKey{Namespace: nameSpace, Name: latestRevision}, oldRev)
-		if err != nil && !errors.IsNotFound(err) {
-			logger.Info(fmt.Sprintf("get old controllerRevision %s error %v",
+		if err != nil && !kerrors.IsNotFound(err) {
+			klog.InfoS(fmt.Sprintf("get old controllerRevision %s error %v",
 				latestRevision, err), "componentName", componentName)
 			return false, err
 		}
@@ -214,8 +235,7 @@ func CompareWithRevision(ctx context.Context, c client.Client, logger logging.Lo
 	}
 	oldComp, err := util.UnpackRevisionData(oldRev)
 	if err != nil {
-		logger.Info(fmt.Sprintf("Unmarshal old controllerRevision %s error %v",
-			latestRevision, err), "componentName", componentName)
+		klog.InfoS("Unmarshal old controllerRevision", latestRevision, "error", err, "componentName", componentName)
 		return true, err
 	}
 	if reflect.DeepEqual(curCompSpec, &oldComp.Spec) {
@@ -223,4 +243,208 @@ func CompareWithRevision(ctx context.Context, c client.Client, logger logging.Lo
 		return false, nil
 	}
 	return true, nil
+}
+
+// ComputeSpecHash computes the hash value of a k8s resource spec
+func ComputeSpecHash(spec interface{}) (string, error) {
+	// compute a hash value of any resource spec
+	specHash, err := hashstructure.Hash(spec, hashstructure.FormatV2, nil)
+	if err != nil {
+		return "", err
+	}
+	specHashLabel := strconv.FormatUint(specHash, 16)
+	return specHashLabel, nil
+}
+
+// RefreshPackageDiscover help refresh package discover
+func RefreshPackageDiscover(ctx context.Context, k8sClient client.Client, dm discoverymapper.DiscoveryMapper,
+	pd *packages.PackageDiscover, definition runtime.Object) error {
+	var gvk schema.GroupVersionKind
+	var err error
+	switch def := definition.(type) {
+	case *v1beta1.ComponentDefinition:
+		if def.Spec.Workload.Definition == (commontypes.WorkloadGVK{}) {
+			workloadDef := new(v1beta1.WorkloadDefinition)
+			err = k8sClient.Get(ctx, client.ObjectKey{Name: def.Spec.Workload.Type, Namespace: def.Namespace}, workloadDef)
+			if err != nil {
+				return err
+			}
+			gvk, err = util.GetGVKFromDefinition(dm, workloadDef.Spec.Reference)
+			if err != nil {
+				return err
+			}
+		} else {
+			gv, err := schema.ParseGroupVersion(def.Spec.Workload.Definition.APIVersion)
+			if err != nil {
+				return err
+			}
+			gvk = gv.WithKind(def.Spec.Workload.Definition.Kind)
+		}
+	case *v1beta1.TraitDefinition:
+		gvk, err = util.GetGVKFromDefinition(dm, def.Spec.Reference)
+		if err != nil {
+			return err
+		}
+	case *v1beta1.PolicyDefinition:
+		gvk, err = util.GetGVKFromDefinition(dm, def.Spec.Reference)
+		if err != nil {
+			return err
+		}
+	case *v1beta1.WorkflowStepDefinition:
+		gvk, err = util.GetGVKFromDefinition(dm, def.Spec.Reference)
+		if err != nil {
+			return err
+		}
+	default:
+	}
+	targetGVK := metav1.GroupVersionKind{
+		Group:   gvk.Group,
+		Version: gvk.Version,
+		Kind:    gvk.Kind,
+	}
+	if exist := pd.Exist(targetGVK); exist {
+		return nil
+	}
+
+	if err := pd.RefreshKubePackagesFromCluster(); err != nil {
+		return err
+	}
+
+	// Test whether the refresh is successful
+	if exist := pd.Exist(targetGVK); !exist {
+		return fmt.Errorf("get CRD %s error", targetGVK.String())
+	}
+	return nil
+}
+
+// CheckAppDeploymentUsingAppRevision get all appDeployments using appRevisions related the app
+func CheckAppDeploymentUsingAppRevision(ctx context.Context, c client.Reader, appNs string, appName string) ([]string, error) {
+	deployOpts := []client.ListOption{
+		client.InNamespace(appNs),
+	}
+	var res []string
+	ads := new(v1beta1.AppDeploymentList)
+	if err := c.List(ctx, ads, deployOpts...); err != nil {
+		return nil, err
+	}
+	if len(ads.Items) == 0 {
+		return res, nil
+	}
+	relatedRevs := new(v1beta1.ApplicationRevisionList)
+	revOpts := []client.ListOption{
+		client.InNamespace(appNs),
+		client.MatchingLabels{oam.LabelAppName: appName},
+	}
+	if err := c.List(ctx, relatedRevs, revOpts...); err != nil {
+		return nil, err
+	}
+	if len(relatedRevs.Items) == 0 {
+		return res, nil
+	}
+	revName := map[string]bool{}
+	for _, rev := range relatedRevs.Items {
+		if len(rev.Name) != 0 {
+			revName[rev.Name] = true
+		}
+	}
+	for _, d := range ads.Items {
+		for _, dr := range d.Spec.AppRevisions {
+			if len(dr.RevisionName) != 0 {
+				if revName[dr.RevisionName] {
+					res = append(res, dr.RevisionName)
+				}
+			}
+		}
+	}
+	return res, nil
+}
+
+// GetUnstructuredObjectStatusCondition returns the status.condition with matching condType from an unstructured object.
+func GetUnstructuredObjectStatusCondition(obj *unstructured.Unstructured, condType string) (*runtimev1alpha1.Condition, bool, error) {
+	cs, found, err := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if err != nil {
+		return nil, false, err
+	}
+	if !found {
+		return nil, false, nil
+	}
+	for _, c := range cs {
+		b, err := json.Marshal(c)
+		if err != nil {
+			return nil, false, err
+		}
+		condObj := &runtimev1alpha1.Condition{}
+		err = json.Unmarshal(b, condObj)
+		if err != nil {
+			return nil, false, err
+		}
+
+		if string(condObj.Type) != condType {
+			continue
+		}
+		return condObj, true, nil
+	}
+
+	return nil, false, nil
+}
+
+// GetInitializer get initializer from two level namespace
+func GetInitializer(ctx context.Context, cli client.Client, namespace, name string) (*v1beta1.Initializer, error) {
+	init := new(v1beta1.Initializer)
+	req := client.ObjectKey{Namespace: namespace, Name: name}
+	err := cli.Get(ctx, req, init)
+	if kerrors.IsNotFound(err) && req.Namespace == "" {
+		req.Namespace = velatypes.DefaultKubeVelaNS
+		err = cli.Get(ctx, req, init)
+		return init, err
+	}
+	return init, err
+}
+
+// GetBuildInInitializer get build-in initializer from configMap in vela-system namespace
+func GetBuildInInitializer(ctx context.Context, cli client.Client, name string) (*v1beta1.Initializer, error) {
+	listOpts := []client.ListOption{
+		client.InNamespace(velatypes.DefaultKubeVelaNS),
+		client.MatchingLabels{
+			oam.LabelAddonsName: name,
+		},
+	}
+	configMapList := new(corev1.ConfigMapList)
+	err := cli.List(ctx, configMapList, listOpts...)
+	if err != nil {
+		return nil, err
+	}
+	if len(configMapList.Items) != 1 {
+		return nil, errors.Errorf("fail to get build-in initializer %s, there are %d matched initializers", name, len(configMapList.Items))
+	}
+
+	init := new(v1beta1.Initializer)
+	initYaml := configMapList.Items[0].Data["initializer"]
+	err = yaml.Unmarshal([]byte(initYaml), init)
+	if err != nil {
+		return nil, errors.WithMessagef(err, "fail to unmarshal build-in initializer %s from configmap", name)
+	}
+
+	return init, nil
+}
+
+// ReadyCondition generate ready condition for conditionType
+func ReadyCondition(tpy string) runtimev1alpha1.Condition {
+	return runtimev1alpha1.Condition{
+		Type:               runtimev1alpha1.ConditionType(tpy),
+		Status:             corev1.ConditionTrue,
+		Reason:             runtimev1alpha1.ReasonAvailable,
+		LastTransitionTime: metav1.NewTime(time.Now()),
+	}
+}
+
+// ErrorCondition generate error condition for conditionType and error
+func ErrorCondition(tpy string, err error) runtimev1alpha1.Condition {
+	return runtimev1alpha1.Condition{
+		Type:               runtimev1alpha1.ConditionType(tpy),
+		Status:             corev1.ConditionFalse,
+		LastTransitionTime: metav1.NewTime(time.Now()),
+		Reason:             runtimev1alpha1.ReasonReconcileError,
+		Message:            err.Error(),
+	}
 }

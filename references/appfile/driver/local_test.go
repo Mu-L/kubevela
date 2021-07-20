@@ -1,3 +1,19 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package driver
 
 import (
@@ -34,7 +50,7 @@ func init() {
 	_ = ioutil.WriteFile(filepath.Join(dir, appName+".yaml"), out, 0644)
 }
 
-func TestLocal_Delete(t *testing.T) {
+func TestLocalDelete(t *testing.T) {
 	type args struct {
 		envName string
 		appName string
@@ -57,7 +73,7 @@ func TestLocal_Delete(t *testing.T) {
 	}
 }
 
-func TestLocal_Save(t *testing.T) {
+func TestLocalSave(t *testing.T) {
 	type args struct {
 		app     *api.Application
 		envName string
@@ -79,7 +95,7 @@ func TestLocal_Save(t *testing.T) {
 	}
 }
 
-func TestLocal_Name(t *testing.T) {
+func TestLocalName(t *testing.T) {
 	tests := []struct {
 		name string
 		want string
@@ -112,7 +128,7 @@ func TestNewLocalStorage(t *testing.T) {
 	}
 }
 
-func Test_getApplicationDir(t *testing.T) {
+func TestGetApplicationDir(t *testing.T) {
 	type args struct {
 		envName string
 	}

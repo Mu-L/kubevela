@@ -1,9 +1,32 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package cli
 
 import (
+	"io/ioutil"
+	"path/filepath"
+
+	"github.com/ghodss/yaml"
+	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 
+	corev1beta1 "github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
+	common2 "github.com/oam-dev/kubevela/pkg/utils/common"
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
 	"github.com/oam-dev/kubevela/references/common"
 )
@@ -13,7 +36,7 @@ var (
 )
 
 // NewUpCommand will create command for applying an AppFile
-func NewUpCommand(c types.Args, ioStream cmdutil.IOStreams) *cobra.Command {
+func NewUpCommand(c common2.Args, ioStream cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:                   "up",
 		DisableFlagsInUseLine: true,
@@ -34,21 +57,36 @@ func NewUpCommand(c types.Args, ioStream cmdutil.IOStreams) *cobra.Command {
 			if err != nil {
 				return err
 			}
-
-			o := &common.AppfileOptions{
-				Kubecli: kubecli,
-				IO:      ioStream,
-				Env:     velaEnv,
-			}
 			filePath, err := cmd.Flags().GetString(appFilePath)
 			if err != nil {
 				return err
 			}
-			return o.Run(filePath, velaEnv.Namespace, c)
+			fileContent, err := ioutil.ReadFile(filepath.Clean(filePath))
+			if err != nil {
+				return err
+			}
+			var app corev1beta1.Application
+			err = yaml.Unmarshal(fileContent, &app)
+			if err != nil {
+				return errors.Wrap(err, "File format is illegal")
+			}
+			if app.APIVersion != "" && app.Kind != "" {
+				err = common.ApplyApplication(app, ioStream, kubecli)
+				if err != nil {
+					return err
+				}
+			} else {
+				o := &common.AppfileOptions{
+					Kubecli: kubecli,
+					IO:      ioStream,
+					Env:     velaEnv,
+				}
+				return o.Run(filePath, velaEnv.Namespace, c)
+			}
+			return nil
 		},
 	}
 	cmd.SetOut(ioStream.Out)
-
 	cmd.Flags().StringP(appFilePath, "f", "", "specify file path for appfile")
 	return cmd
 }

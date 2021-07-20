@@ -1,3 +1,19 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package e2e
 
 import (
@@ -48,7 +64,7 @@ var (
 			svcName: map[string]interface{}{
 				"type":  workloadType,
 				"image": "wordpress:php7.4-apache",
-				"port":  "80",
+				"port":  80,
 				"cpu":   "1",
 			},
 		},
@@ -63,6 +79,7 @@ var notExistedEnvMeta = apis.Environment{
 var webserviceWorkloadType = "webservice"
 var workerWorkloadType = "worker"
 var taskWorkloadType = "task"
+var rawWorkloadType = "raw"
 
 var _ = ginkgo.Describe("API", func() {
 	//API Env
@@ -208,20 +225,29 @@ var _ = ginkgo.Describe("API", func() {
 			gomega.Expect(r.Data.(string)).To(gomega.ContainSubstring(output))
 		})
 
-		ginkgo.It("should list all WorkloadDefinitions", func() {
-			resp, err := http.Get(util.URL("/workloads/"))
+		ginkgo.It("should list all ComponentDefinitions", func() {
+			resp, err := http.Get(util.URL("/components/"))
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			defer resp.Body.Close()
 			result, err := ioutil.ReadAll(resp.Body)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			var r apis.Response
 			err = json.Unmarshal(result, &r)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(http.StatusOK).To(gomega.Equal(r.Code))
 			var data = r.Data.([]interface{})
+			componentDefinitions := make([]string, 0)
+			builtinCompDefs := []string{webserviceWorkloadType, workerWorkloadType, taskWorkloadType, rawWorkloadType}
 			for _, i := range data {
-				var workloadDefinition = i.(map[string]interface{})
-				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				gomega.Expect([]string{webserviceWorkloadType, workerWorkloadType, taskWorkloadType}).To(gomega.Or(gomega.ContainElement(workloadDefinition["name"])))
+				workloadDefinition, ok := i.(map[string]interface{})
+				gomega.Expect(ok).To(gomega.BeTrue())
+				name, ok := workloadDefinition["name"].(string)
+				gomega.Expect(ok).To(gomega.BeTrue())
+				componentDefinitions = append(componentDefinitions, name)
+			}
+			gomega.Expect(len(componentDefinitions)).To(gomega.BeNumerically(">=", 4))
+			for _, d := range builtinCompDefs {
+				gomega.Expect(componentDefinitions).To(gomega.ContainElements(d))
 			}
 		})
 

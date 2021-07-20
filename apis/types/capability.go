@@ -1,5 +1,5 @@
 /*
-
+Copyright 2021 The KubeVela Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,6 +22,9 @@ import (
 	"cuelang.org/go/cue"
 	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/pflag"
+	"k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 )
 
 // Source record the source of Capability
@@ -38,15 +41,16 @@ type CRDInfo struct {
 
 // Capability defines the content of a capability
 type Capability struct {
-	Name           string      `json:"name"`
-	Type           CapType     `json:"type"`
-	CueTemplate    string      `json:"template,omitempty"`
-	CueTemplateURI string      `json:"templateURI,omitempty"`
-	Parameters     []Parameter `json:"parameters,omitempty"`
-	CrdName        string      `json:"crdName,omitempty"`
-	Center         string      `json:"center,omitempty"`
-	Status         string      `json:"status,omitempty"`
-	Description    string      `json:"description,omitempty"`
+	Name           string             `json:"name"`
+	Type           CapType            `json:"type"`
+	CueTemplate    string             `json:"template,omitempty"`
+	CueTemplateURI string             `json:"templateURI,omitempty"`
+	Parameters     []Parameter        `json:"parameters,omitempty"`
+	CrdName        string             `json:"crdName,omitempty"`
+	Center         string             `json:"center,omitempty"`
+	Status         string             `json:"status,omitempty"`
+	Description    string             `json:"description,omitempty"`
+	Category       CapabilityCategory `json:"category,omitempty"`
 
 	// trait only
 	AppliesTo []string `json:"appliesTo,omitempty"`
@@ -58,6 +62,13 @@ type Capability struct {
 	Source  *Source       `json:"source,omitempty"`
 	Install *Installation `json:"install,omitempty"`
 	CrdInfo *CRDInfo      `json:"crdInfo,omitempty"`
+
+	// Terraform
+	TerraformConfiguration string `json:"terraformConfiguration,omitempty"`
+
+	// KubeTemplate
+	KubeTemplate  runtime.RawExtension   `json:"kubetemplate,omitempty"`
+	KubeParameter []common.KubeParameter `json:"kubeparameter,omitempty"`
 }
 
 // Chart defines all necessary information to install a whole chart
@@ -80,12 +91,18 @@ type Installation struct {
 type CapType string
 
 const (
+	// TypeComponentDefinition represents OAM ComponentDefinition
+	TypeComponentDefinition CapType = "componentDefinition"
 	// TypeWorkload represents OAM Workload
 	TypeWorkload CapType = "workload"
 	// TypeTrait represents OAM Trait
 	TypeTrait CapType = "trait"
 	// TypeScope represent OAM Scope
 	TypeScope CapType = "scope"
+	// TypeWorkflowStep represent OAM Workflow
+	TypeWorkflowStep CapType = "workflowstep"
+	// TypePolicy represent OAM Policy
+	TypePolicy CapType = "policy"
 )
 
 // CapabilityConfigMapNamePrefix is the prefix for capability ConfigMap name
@@ -99,9 +116,15 @@ const (
 // CapabilityCategory defines the category of a capability
 type CapabilityCategory string
 
+// categories of capability schematic
 const (
-	// TerraformCategory means the capability is in Terraform format
 	TerraformCategory CapabilityCategory = "terraform"
+
+	HelmCategory CapabilityCategory = "helm"
+
+	KubeCategory CapabilityCategory = "kube"
+
+	CUECategory CapabilityCategory = "cue"
 )
 
 // Parameter defines a parameter for cli from capability template
@@ -111,8 +134,10 @@ type Parameter struct {
 	Required bool        `json:"required,omitempty"`
 	Default  interface{} `json:"default,omitempty"`
 	Usage    string      `json:"usage,omitempty"`
+	Ignore   bool        `json:"ignore,omitempty"`
 	Type     cue.Kind    `json:"type,omitempty"`
 	Alias    string      `json:"alias,omitempty"`
+	JSONType string      `json:"jsonType,omitempty"`
 }
 
 // SetFlagBy set cli flag from Parameter

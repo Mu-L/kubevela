@@ -1,3 +1,19 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package util_test
 
 import (
@@ -8,6 +24,7 @@ import (
 	"os"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
 	"github.com/crossplane/crossplane-runtime/pkg/resource/fake"
@@ -21,10 +38,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/mock"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
@@ -160,7 +179,6 @@ func TestLocateParentAppConfig(t *testing.T) {
 func TestFetchWorkloadTraitReference(t *testing.T) {
 
 	t.Log("Setting up variables")
-	log := ctrl.Log.WithName("ManualScalarTraitReconciler")
 	noRefNameTrait := v1alpha2.ManualScalerTrait{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: v1alpha2.SchemeGroupVersion.String(),
@@ -239,7 +257,7 @@ func TestFetchWorkloadTraitReference(t *testing.T) {
 	for name, tc := range cases {
 		tclient := test.NewMockClient()
 		tclient.MockGet = test.NewMockGetFn(nil, tc.fields.getFunc)
-		gotWL, err := util.FetchWorkload(ctx, tclient, log, tc.fields.trait)
+		gotWL, err := util.FetchWorkload(ctx, tclient, tc.fields.trait)
 		t.Log(fmt.Sprint("Running test: ", name))
 		if tc.want.err == nil {
 			assert.NoError(t, err)
@@ -270,7 +288,7 @@ func TestScopeRelatedUtils(t *testing.T) {
 			Namespace: namespace,
 		},
 		Spec: v1alpha2.ScopeDefinitionSpec{
-			Reference: v1alpha2.DefinitionReference{
+			Reference: common.DefinitionReference{
 				Name: scopeDefinitionRefName,
 			},
 			WorkloadRefsPath:      scopeDefinitionWorkloadRefsPath,
@@ -370,7 +388,7 @@ func TestTraitHelper(t *testing.T) {
 			Namespace: namespace,
 		},
 		Spec: v1alpha2.TraitDefinitionSpec{
-			Reference: v1alpha2.DefinitionReference{
+			Reference: common.DefinitionReference{
 				Name: traitDefinitionRefName,
 			},
 			RevisionEnabled:    false,
@@ -473,7 +491,7 @@ func TestUtils(t *testing.T) {
 			Name: workloadDefinitionName,
 		},
 		Spec: v1alpha2.WorkloadDefinitionSpec{
-			Reference: v1alpha2.DefinitionReference{
+			Reference: common.DefinitionReference{
 				Name: workloadDefinitionName,
 			},
 		},
@@ -560,14 +578,13 @@ func TestChildResources(t *testing.T) {
 			Name: workloadDefinitionName,
 		},
 		Spec: v1alpha2.WorkloadDefinitionSpec{
-			Reference: v1alpha2.DefinitionReference{
+			Reference: common.DefinitionReference{
 				Name: workloadDefinitionName,
 			},
 		},
 	}
 
-	log := ctrl.Log.WithName("ManualScalarTraitReconciler")
-	crkl := []v1alpha2.ChildResourceKind{
+	crkl := []common.ChildResourceKind{
 		{
 			Kind:       "Deployment",
 			APIVersion: "apps/v1",
@@ -708,7 +725,7 @@ func TestChildResources(t *testing.T) {
 			MockGet:  test.NewMockGetFn(nil, tc.fields.getFunc),
 			MockList: test.NewMockListFn(nil, tc.fields.listFunc),
 		}
-		got, err := util.FetchWorkloadChildResources(ctx, log, &tclient, mock.NewMockDiscoveryMapper(), unstructuredWorkload)
+		got, err := util.FetchWorkloadChildResources(ctx, &tclient, mock.NewMockDiscoveryMapper(), unstructuredWorkload)
 		t.Log(fmt.Sprint("Running test: ", name))
 		assert.Equal(t, tc.want.err, err)
 		assert.Equal(t, tc.want.crks, got)
@@ -778,7 +795,7 @@ func TestUnstructured(t *testing.T) {
 func TestGetGVKFromDef(t *testing.T) {
 	mapper := mock.NewMockDiscoveryMapper()
 	mapper.MockKindsFor = mock.NewMockKindsFor("Abc", "v1", "v2")
-	gvk, err := util.GetGVKFromDefinition(mapper, v1alpha2.DefinitionReference{Name: "abcs.example.com"})
+	gvk, err := util.GetGVKFromDefinition(mapper, common.DefinitionReference{Name: "abcs.example.com"})
 	assert.NoError(t, err)
 	assert.Equal(t, schema.GroupVersionKind{
 		Group:   "example.com",
@@ -786,7 +803,7 @@ func TestGetGVKFromDef(t *testing.T) {
 		Kind:    "Abc",
 	}, gvk)
 
-	gvk, err = util.GetGVKFromDefinition(mapper, v1alpha2.DefinitionReference{Name: "abcs.example.com", Version: "v2"})
+	gvk, err = util.GetGVKFromDefinition(mapper, common.DefinitionReference{Name: "abcs.example.com", Version: "v2"})
 	assert.NoError(t, err)
 	assert.Equal(t, schema.GroupVersionKind{
 		Group:   "example.com",
@@ -794,7 +811,7 @@ func TestGetGVKFromDef(t *testing.T) {
 		Kind:    "Abc",
 	}, gvk)
 
-	gvk, err = util.GetGVKFromDefinition(mapper, v1alpha2.DefinitionReference{})
+	gvk, err = util.GetGVKFromDefinition(mapper, common.DefinitionReference{})
 	assert.NoError(t, err)
 	assert.Equal(t, schema.GroupVersionKind{
 		Group:   "",
@@ -802,13 +819,40 @@ func TestGetGVKFromDef(t *testing.T) {
 		Kind:    "",
 	}, gvk)
 
-	gvk, err = util.GetGVKFromDefinition(mapper, v1alpha2.DefinitionReference{Name: "dummy"})
+	gvk, err = util.GetGVKFromDefinition(mapper, common.DefinitionReference{Name: "dummy"})
 	assert.NoError(t, err)
 	assert.Equal(t, schema.GroupVersionKind{
 		Group:   "",
 		Version: "",
 		Kind:    "",
 	}, gvk)
+}
+
+func TestConvertWorkloadGVK2Def(t *testing.T) {
+	mapper := mock.NewMockDiscoveryMapper()
+
+	mapper.MockRESTMapping = mock.NewMockRESTMapping("clonesets")
+	ref, err := util.ConvertWorkloadGVK2Definition(mapper, common.WorkloadGVK{APIVersion: "apps.kruise.io/v1alpha1",
+		Kind: "CloneSet"})
+	assert.NoError(t, err)
+	assert.Equal(t, common.DefinitionReference{
+		Name:    "clonesets.apps.kruise.io",
+		Version: "v1alpha1",
+	}, ref)
+
+	mapper.MockRESTMapping = mock.NewMockRESTMapping("deployments")
+	ref, err = util.ConvertWorkloadGVK2Definition(mapper, common.WorkloadGVK{APIVersion: "apps/v1",
+		Kind: "Deployment"})
+	assert.NoError(t, err)
+	assert.Equal(t, common.DefinitionReference{
+		Name:    "deployments.apps",
+		Version: "v1",
+	}, ref)
+
+	ref, err = util.ConvertWorkloadGVK2Definition(mapper, common.WorkloadGVK{APIVersion: "/apps/v1",
+		Kind: "Deployment"})
+	assert.Error(t, err)
+
 }
 
 func TestGenTraitName(t *testing.T) {
@@ -939,7 +983,122 @@ func TestDeepHashObject(t *testing.T) {
 	}
 }
 
-func TestPatchCondition(t *testing.T) {
+func TestEndReconcileWithNegativeCondition(t *testing.T) {
+
+	var time1, time2 time.Time
+	time1 = time.Now()
+	time2 = time1.Add(time.Second)
+
+	type args struct {
+		ctx       context.Context
+		r         client.StatusClient
+		workload  util.ConditionedObject
+		condition []v1alpha1.Condition
+	}
+	patchErr := fmt.Errorf("eww")
+	tests := []struct {
+		name     string
+		args     args
+		expected error
+	}{
+		{
+			name: "no condition is added",
+			args: args{
+				ctx: context.Background(),
+				r: &test.MockClient{
+					MockStatusPatch: test.NewMockStatusPatchFn(nil),
+				},
+				workload:  &fake.Target{},
+				condition: []v1alpha1.Condition{},
+			},
+			expected: nil,
+		},
+		{
+			name: "condition is changed",
+			args: args{
+				ctx: context.Background(),
+				r: &test.MockClient{
+					MockStatusPatch: test.NewMockStatusPatchFn(nil),
+				},
+				workload: &fake.Target{
+					ConditionedStatus: v1alpha1.ConditionedStatus{
+						Conditions: []v1alpha1.Condition{
+							{
+								Type:               "test",
+								LastTransitionTime: metav1.NewTime(time1),
+								Reason:             "old reason",
+								Message:            "old error msg",
+							},
+						},
+					},
+				},
+				condition: []v1alpha1.Condition{
+					{
+						Type:               "test",
+						LastTransitionTime: metav1.NewTime(time2),
+						Reason:             "new reason",
+						Message:            "new error msg",
+					},
+				},
+			},
+			expected: nil,
+		},
+		{
+			name: "condition is not changed",
+			args: args{
+				ctx: context.Background(),
+				r: &test.MockClient{
+					MockStatusPatch: test.NewMockStatusPatchFn(nil),
+				},
+				workload: &fake.Target{
+					ConditionedStatus: v1alpha1.ConditionedStatus{
+						Conditions: []v1alpha1.Condition{
+							{
+								Type:               "test",
+								LastTransitionTime: metav1.NewTime(time1),
+								Reason:             "old reason",
+								Message:            "old error msg",
+							},
+						},
+					},
+				},
+				condition: []v1alpha1.Condition{
+					{
+						Type:               "test",
+						LastTransitionTime: metav1.NewTime(time2),
+						Reason:             "old reason",
+						Message:            "old error msg",
+					},
+				},
+			},
+			expected: fmt.Errorf(util.ErrReconcileErrInCondition, "test", "old error msg"),
+		},
+		{
+			name: "fail for patching error",
+			args: args{
+				ctx: context.Background(),
+				r: &test.MockClient{
+					MockStatusPatch: test.NewMockStatusPatchFn(patchErr),
+				},
+				workload: &fake.Target{},
+				condition: []v1alpha1.Condition{
+					{},
+				},
+			},
+			expected: errors.Wrap(patchErr, util.ErrUpdateStatus),
+		},
+	}
+	for _, tt := range tests {
+		err := util.EndReconcileWithNegativeCondition(tt.args.ctx, tt.args.r, tt.args.workload, tt.args.condition...)
+		if tt.expected == nil {
+			assert.NoError(t, err)
+		} else {
+			assert.Equal(t, tt.expected.Error(), err.Error())
+		}
+	}
+}
+
+func TestEndReconcileWithPositiveCondition(t *testing.T) {
 	type args struct {
 		ctx       context.Context
 		r         client.StatusClient
@@ -982,7 +1141,7 @@ func TestPatchCondition(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		err := util.PatchCondition(tt.args.ctx, tt.args.r, tt.args.workload, tt.args.condition...)
+		err := util.EndReconcileWithPositiveCondition(tt.args.ctx, tt.args.r, tt.args.workload, tt.args.condition...)
 		if tt.expected == nil {
 			assert.NoError(t, err)
 		} else {
@@ -1029,7 +1188,7 @@ func TestComponentHelper(t *testing.T) {
 			},
 		}}}},
 		Status: v1alpha2.ComponentStatus{
-			LatestRevision: &v1alpha2.Revision{Name: revisionName2, Revision: 2},
+			LatestRevision: &common.Revision{Name: revisionName2, Revision: 2},
 		},
 	}
 
@@ -1324,7 +1483,7 @@ func TestGetDummy(t *testing.T) {
 			"kind":       u.GetKind(),
 			"name":       u.GetName(),
 		}},
-		Spec: v1alpha2.TraitDefinitionSpec{Reference: v1alpha2.DefinitionReference{Name: "dummy"}},
+		Spec: v1alpha2.TraitDefinitionSpec{Reference: common.DefinitionReference{Name: "dummy"}},
 	}, util.GetDummyTraitDefinition(u))
 	assert.Equal(t, &v1alpha2.WorkloadDefinition{
 		TypeMeta: metav1.TypeMeta{Kind: v1alpha2.WorkloadDefinitionKind, APIVersion: v1alpha2.SchemeGroupVersion.String()},
@@ -1333,7 +1492,7 @@ func TestGetDummy(t *testing.T) {
 			"kind":       u.GetKind(),
 			"name":       u.GetName(),
 		}},
-		Spec: v1alpha2.WorkloadDefinitionSpec{Reference: v1alpha2.DefinitionReference{Name: "dummy"}},
+		Spec: v1alpha2.WorkloadDefinitionSpec{Reference: common.DefinitionReference{Name: "dummy"}},
 	}, util.GetDummyWorkloadDefinition(u))
 }
 
@@ -1420,7 +1579,7 @@ func TestGetDefinitionWithClusterScope(t *testing.T) {
 			Namespace: "vela-system",
 		},
 		Spec: v1alpha2.TraitDefinitionSpec{
-			Reference: v1alpha2.DefinitionReference{
+			Reference: common.DefinitionReference{
 				Name: "definitionrefrence.core.oam.dev",
 			},
 		},
@@ -1432,7 +1591,7 @@ func TestGetDefinitionWithClusterScope(t *testing.T) {
 			Namespace: "vela-app",
 		},
 		Spec: v1alpha2.TraitDefinitionSpec{
-			Reference: v1alpha2.DefinitionReference{
+			Reference: common.DefinitionReference{
 				Name: "definitionrefrence",
 			},
 		},
@@ -1443,7 +1602,7 @@ func TestGetDefinitionWithClusterScope(t *testing.T) {
 			Name: "noNsDefinition",
 		},
 		Spec: v1alpha2.TraitDefinitionSpec{
-			Reference: v1alpha2.DefinitionReference{
+			Reference: common.DefinitionReference{
 				Name: "definitionrefrence",
 			},
 		},
@@ -1539,7 +1698,7 @@ func TestGetWorkloadDefinition(t *testing.T) {
 			Namespace: "vela-system",
 		},
 		Spec: v1alpha2.WorkloadDefinitionSpec{
-			Reference: v1alpha2.DefinitionReference{
+			Reference: common.DefinitionReference{
 				Name: "definitionrefrence.core.oam.dev",
 			},
 		},
@@ -1552,7 +1711,7 @@ func TestGetWorkloadDefinition(t *testing.T) {
 			Namespace: "vela-app",
 		},
 		Spec: v1alpha2.WorkloadDefinitionSpec{
-			Reference: v1alpha2.DefinitionReference{
+			Reference: common.DefinitionReference{
 				Name: "definitionrefrence.core.oam.dev",
 			},
 		},
@@ -1631,7 +1790,7 @@ func TestGetTraitDefinition(t *testing.T) {
 			Namespace: "vela-system",
 		},
 		Spec: v1alpha2.TraitDefinitionSpec{
-			Reference: v1alpha2.DefinitionReference{
+			Reference: common.DefinitionReference{
 				Name: "definitionrefrence.core.oam.dev",
 			},
 		},
@@ -1644,7 +1803,7 @@ func TestGetTraitDefinition(t *testing.T) {
 			Namespace: "vela-app",
 		},
 		Spec: v1alpha2.TraitDefinitionSpec{
-			Reference: v1alpha2.DefinitionReference{
+			Reference: common.DefinitionReference{
 				Name: "definitionrefrence.core.oam.dev",
 			},
 		},
@@ -1788,7 +1947,7 @@ func TestGetScopeDefiniton(t *testing.T) {
 			Namespace: "vela-system",
 		},
 		Spec: v1alpha2.ScopeDefinitionSpec{
-			Reference: v1alpha2.DefinitionReference{
+			Reference: common.DefinitionReference{
 				Name: scopeDefinitionRefName,
 			},
 			WorkloadRefsPath:      scopeDefinitionWorkloadRefsPath,
@@ -1806,7 +1965,7 @@ func TestGetScopeDefiniton(t *testing.T) {
 			Namespace: namespace,
 		},
 		Spec: v1alpha2.ScopeDefinitionSpec{
-			Reference: v1alpha2.DefinitionReference{
+			Reference: common.DefinitionReference{
 				Name: scopeDefinitionRefName,
 			},
 			WorkloadRefsPath:      scopeDefinitionWorkloadRefsPath,
@@ -1869,4 +2028,455 @@ func TestGetScopeDefiniton(t *testing.T) {
 		assert.Equal(t, tc.want.err, err)
 		assert.Equal(t, tc.want.spd, got)
 	}
+}
+
+func TestConvertComponentDef2WorkloadDef(t *testing.T) {
+	var cd = v1beta1.ComponentDefinition{}
+	mapper := mock.NewMockDiscoveryMapper()
+
+	var componentDefWithWrongDefinition = `
+apiVersion: core.oam.dev/v1beta1
+kind: ComponentDefinition
+metadata:
+  name: worker
+spec:
+  workload:
+    definition:
+      apiVersion: /apps/v1/
+      kind: Deployment
+`
+	cd = v1beta1.ComponentDefinition{}
+	err := yaml.Unmarshal([]byte(componentDefWithWrongDefinition), &cd)
+	assert.Equal(t, nil, err)
+	err = util.ConvertComponentDef2WorkloadDef(mapper, &cd, &v1beta1.WorkloadDefinition{})
+	assert.Error(t, err)
+
+	mapper.MockRESTMapping = mock.NewMockRESTMapping("deployments")
+	var Template = `
+  schematic:
+    cue:
+      template: |
+        output: {
+        	apiVersion: "apps/v1"
+        	kind:       "Deployment"
+        	spec: {
+        		selector: matchLabels: {
+        			"app.oam.dev/component": context.name
+        		}
+        
+        		template: {
+        			metadata: labels: {
+        				"app.oam.dev/component": context.name
+        			}
+        
+        			spec: {
+        				containers: [{
+        					name:  context.name
+        					image: parameter.image
+        
+        					if parameter["cmd"] != _|_ {
+        						command: parameter.cmd
+        					}
+        				}]
+        			}
+        		}
+        	}
+        }
+        
+        parameter: {
+        	// +usage=Which image would you like to use for your service
+        	// +short=i
+        	image: string
+        	// +usage=Commands to run in the container
+        	cmd?: [...string]
+        }
+`
+	var componentDefWithDefinition = `
+apiVersion: core.oam.dev/v1beta1
+kind: ComponentDefinition
+metadata:
+  name: worker
+  namespace: vela-system
+  labels:
+    env: test
+  annotations:
+    definition.oam.dev/description: "Describes long-running, scalable, containerized services that running at backend."
+spec:
+  workload:
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+  childResourceKinds:
+    - apiVersion: apps/v1
+      kind: Deployment
+  status:
+    healthPolicy: |
+      isHealth: (context.output.status.readyReplicas > 0) && (context.output.status.readyReplicas == context.output.status.replicas)` + Template
+
+	var expectWorkloadDef = `
+apiVersion: core.oam.dev/v1beta1
+kind: WorkloadDefinition
+metadata:
+  name: worker
+  namespace: vela-system
+  labels:
+    env: test
+  annotations:
+    definition.oam.dev/description: "Describes long-running, scalable, containerized services that running at backend."
+spec:
+  definitionRef:
+    name: deployments.apps
+    version: v1
+  childResourceKinds:
+    - apiVersion: apps/v1
+      kind: Deployment
+  status:
+    healthPolicy: |
+      isHealth: (context.output.status.readyReplicas > 0) && (context.output.status.readyReplicas == context.output.status.replicas)` + Template
+	cd = v1beta1.ComponentDefinition{}
+	wd := &v1beta1.WorkloadDefinition{}
+	err = yaml.Unmarshal([]byte(componentDefWithDefinition), &cd)
+	assert.NoError(t, err)
+	err = util.ConvertComponentDef2WorkloadDef(mapper, &cd, wd)
+	assert.NoError(t, err)
+	expectWd := v1beta1.WorkloadDefinition{}
+	err = yaml.Unmarshal([]byte(expectWorkloadDef), &expectWd)
+	assert.NoError(t, err)
+	assert.Equal(t, expectWd.Namespace, wd.Namespace)
+	assert.Equal(t, expectWd.Name, wd.Name)
+	assert.Equal(t, expectWd.Labels, wd.Labels)
+	assert.Equal(t, expectWd.Annotations, wd.Annotations)
+	assert.Equal(t, expectWd.Spec.Reference, wd.Spec.Reference)
+	assert.Equal(t, expectWd.Spec.ChildResourceKinds, wd.Spec.ChildResourceKinds)
+	assert.Equal(t, expectWd.Spec.Status, wd.Spec.Status)
+	assert.Equal(t, expectWd.Spec.Schematic, wd.Spec.Schematic)
+}
+
+func TestExtractRevisionNum(t *testing.T) {
+	testcases := []struct {
+		revName         string
+		wantRevisionNum int
+		delimiter       string
+		hasError        bool
+	}{{
+		revName:         "myapp-v1",
+		wantRevisionNum: 1,
+		delimiter:       "-",
+		hasError:        false,
+	}, {
+		revName:         "new-app-v2",
+		wantRevisionNum: 2,
+		delimiter:       "-",
+		hasError:        false,
+	}, {
+		revName:         "v1-v10",
+		wantRevisionNum: 10,
+		delimiter:       "-",
+		hasError:        false,
+	}, {
+		revName:         "v10-v1-v1",
+		wantRevisionNum: 1,
+		delimiter:       "-",
+		hasError:        false,
+	}, {
+		revName:         "myapp-v1-v2",
+		wantRevisionNum: 2,
+		delimiter:       "-",
+		hasError:        false,
+	}, {
+		revName:         "myapp-v1-vv",
+		wantRevisionNum: 0,
+		delimiter:       "-",
+		hasError:        true,
+	}, {
+		revName:         "v1",
+		wantRevisionNum: 0,
+		delimiter:       "-",
+		hasError:        true,
+	}, {
+		revName:         "myapp-a1",
+		wantRevisionNum: 0,
+		delimiter:       "-",
+		hasError:        true,
+	}, {
+		revName:         "worker@v1",
+		wantRevisionNum: 1,
+		delimiter:       "@",
+		hasError:        false,
+	}, {
+		revName:         "worke@10r@v1",
+		wantRevisionNum: 1,
+		delimiter:       "@",
+		hasError:        false,
+	}, {
+		revName:         "webservice@a10",
+		wantRevisionNum: 0,
+		delimiter:       "@",
+		hasError:        true,
+	}}
+
+	for _, tt := range testcases {
+		revision, err := util.ExtractRevisionNum(tt.revName, tt.delimiter)
+		hasError := err != nil
+		assert.Equal(t, tt.wantRevisionNum, revision)
+		assert.Equal(t, tt.hasError, hasError)
+	}
+}
+
+func TestExtractDefinitionRevName(t *testing.T) {
+	testcases := []struct {
+		defName     string
+		wantRevName string
+		hasError    bool
+	}{{
+		defName:     "worker@v2",
+		wantRevName: "worker-v2",
+		hasError:    false,
+	}, {
+		defName:     "worker@v10",
+		wantRevName: "worker-v10",
+		hasError:    false,
+	}, {
+		defName:     "worker",
+		wantRevName: "",
+		hasError:    true,
+	}, {
+		defName:     "webservice@@v2",
+		wantRevName: "webservice@-v2",
+		hasError:    false,
+	}, {
+		defName:     "webservice@v10@v3",
+		wantRevName: "webservice@v10-v3",
+		hasError:    false,
+	}, {
+		defName:     "@v10",
+		wantRevName: "",
+		hasError:    true,
+	}}
+
+	for _, tt := range testcases {
+		revName, err := util.ConvertDefinitionRevName(tt.defName)
+		hasError := err != nil
+		assert.Equal(t, tt.wantRevName, revName)
+		assert.Equal(t, tt.hasError, hasError)
+	}
+}
+
+func TestAppConfig2ComponentManifests(t *testing.T) {
+	testcases := []struct {
+		ac        string
+		comp      string
+		expectErr bool
+	}{
+		{
+			ac: `apiVersion: core.oam.dev/v1alpha2
+kind: ApplicationConfiguration
+metadata: {}
+spec:
+  components:
+  - componentName: demo-podinfo
+    revisionName: demo-podinfo-v2
+    traits:
+    - trait:
+        apiVersion: networking.k8s.io/v1beta1
+        kind: Ingress
+        metadata:
+          name: demo-podinfo
+        spec:
+          rules:
+          - host: localhost
+            http:
+              paths:
+              - backend:
+                  serviceName: demo-podinfo
+                  servicePort: 8000
+                path: /`,
+			comp: `apiVersion: core.oam.dev/v1alpha2
+kind: Component
+metadata:
+  name: demo-podinfo
+spec:
+  helm:
+    release:
+      apiVersion: helm.toolkit.fluxcd.io/v2beta1
+      kind: HelmRelease
+      metadata:
+        name: myapp-demo-podinfo
+        namespace: default
+      spec:
+        chart:
+          spec:
+            chart: podinfo
+            sourceRef:
+              kind: HelmRepository
+              name: myapp-demo-podinfo
+              namespace: default
+            version: 5.1.4
+        interval: 5m0s
+        values:
+          image:
+            tag: 5.1.2
+    repository:
+      apiVersion: source.toolkit.fluxcd.io/v1beta1
+      kind: HelmRepository
+      metadata:
+        name: myapp-demo-podinfo
+        namespace: default
+      spec:
+        interval: 5m0s
+        url: http://oam.dev/catalog/
+  workload:
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+    spec:
+      replicas: 2`,
+			expectErr: false,
+		},
+		{
+			ac:        `errBoom`,
+			comp:      "",
+			expectErr: true,
+		},
+		{
+			ac: `apiVersion: core.oam.dev/v1alpha2
+kind: ApplicationConfiguration
+metadata: {}
+spec:
+  components:
+  - componentName: demo-podinfo
+    revisionName: demo-podinfo-v2`,
+			comp:      `errBoom`,
+			expectErr: true,
+		},
+		{
+			ac: `apiVersion: core.oam.dev/v1alpha2
+kind: ApplicationConfiguration
+metadata: {}
+spec:
+  components:
+  - componentName: demo-podinfo
+    revisionName: demo-podinfo-v2`,
+			comp: `apiVersion: core.oam.dev/v1alpha2
+kind: Component
+metadata:
+  name: demo-podinfo
+spec:
+  workload:
+    errorBoom`,
+			expectErr: true,
+		},
+		{
+			ac: `apiVersion: core.oam.dev/v1alpha2
+kind: ApplicationConfiguration
+metadata: {}
+spec:
+  components:
+  - componentName: demo-podinfo
+    revisionName: demo-podinfo-v2`,
+			comp: `apiVersion: core.oam.dev/v1alpha2
+kind: Component
+metadata:
+  name: demo-podinfo
+spec:
+  helm:
+    release:
+      errorBoom
+    repository:
+      apiVersion: source.toolkit.fluxcd.io/v1beta1
+      kind: HelmRepository
+      metadata:
+        name: myapp-demo-podinfo
+        namespace: default
+      spec:
+        interval: 5m0s
+        url: http://oam.dev/catalog/
+  workload:
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+    spec:
+      replicas: 2`,
+			expectErr: true,
+		},
+		{
+			ac: `apiVersion: core.oam.dev/v1alpha2
+kind: ApplicationConfiguration
+metadata: {}
+spec:
+  components:
+  - componentName: demo-podinfo
+    revisionName: demo-podinfo-v2`,
+			comp: `apiVersion: core.oam.dev/v1alpha2
+kind: Component
+metadata:
+  name: demo-podinfo
+spec:
+  helm:
+    release:
+      apiVersion: helm.toolkit.fluxcd.io/v2beta1
+      kind: HelmRelease
+      metadata:
+        name: myapp-demo-podinfo
+        namespace: default
+      spec:
+        chart:
+          spec:
+            chart: podinfo
+            sourceRef:
+              kind: HelmRepository
+              name: myapp-demo-podinfo
+              namespace: default
+            version: 5.1.4
+        interval: 5m0s
+        values:
+          image:
+            tag: 5.1.2
+    repository:
+      errorBoom
+  workload:
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+    spec:
+      replicas: 2`,
+			expectErr: true,
+		},
+		{
+			ac: `apiVersion: core.oam.dev/v1alpha2
+kind: ApplicationConfiguration
+metadata: {}
+spec:
+  components:
+  - componentName: demo-podinfo
+    revisionName: demo-podinfo-v2
+    traits:
+    - trait:
+        errorBoom`,
+			comp: `apiVersion: core.oam.dev/v1alpha2
+kind: Component
+metadata:
+  name: demo-podinfo
+spec:
+  workload:
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+    spec:
+      replicas: 2`,
+			expectErr: true,
+		},
+	}
+	for _, tc := range testcases {
+		acJSON, _ := yaml.YAMLToJSON([]byte(tc.ac))
+		acRaw := runtime.RawExtension{Raw: acJSON}
+		compJSON, _ := yaml.YAMLToJSON([]byte(tc.comp))
+		compRaw := runtime.RawExtension{Raw: compJSON}
+		_, err := util.AppConfig2ComponentManifests(acRaw, []common.RawComponent{
+			{Raw: compRaw},
+		})
+		hasError := err != nil
+		assert.Equal(t, tc.expectErr, hasError, "err", err)
+	}
+
 }

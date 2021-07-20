@@ -1,3 +1,19 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package apply
 
 import (
@@ -14,7 +30,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/pkg/oam"
 )
 
 var ctx = context.Background()
@@ -332,6 +352,15 @@ func TestMustBeControllableBy(t *testing.T) {
 			}}}},
 			want: errors.Errorf("existing object is not controlled by UID %q", uid),
 		},
+		"cross namespace resource": {
+			reason: "A cross namespace resource have a resourceTracker owner, skip check UID",
+			u:      uid,
+			current: &testObject{ObjectMeta: metav1.ObjectMeta{OwnerReferences: []metav1.OwnerReference{{
+				UID:        uid,
+				Controller: &controller,
+				Kind:       v1beta1.ResourceTrackerKind,
+			}}}},
+		},
 	}
 
 	for name, tc := range cases {
@@ -340,6 +369,68 @@ func TestMustBeControllableBy(t *testing.T) {
 			err := ao(ctx, tc.current, nil)
 			if diff := cmp.Diff(tc.want, err, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nMustBeControllableBy(...)(...): -want error, +got error\n%s\n", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestMustBeControllableByAny(t *testing.T) {
+	ctrlByAny := []types.UID{"owner1", "owner2"}
+	cases := map[string]struct {
+		reason  string
+		current runtime.Object
+		want    error
+	}{
+		"NoExistingObject": {
+			reason: "No error should be returned if no existing object",
+		},
+		"Adoptable": {
+			reason: "A current object with no controller reference may be adopted and controlled",
+			current: &testObject{ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					oam.AnnotationKubeVelaVersion: "undefined",
+				}},
+			},
+		},
+		"ControlledBySuppliedUID": {
+			reason: "A current object that is already controlled by the supplied UID is controllable",
+			current: &testObject{ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					oam.AnnotationKubeVelaVersion: "undefined",
+				},
+				OwnerReferences: []metav1.OwnerReference{{
+					UID:        types.UID("owner1"),
+					Controller: pointer.BoolPtr(true),
+				}}}},
+		},
+		"ControlledBySomeoneElse": {
+			reason: "A current object that is already controlled by a different UID is not controllable",
+			current: &testObject{ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					oam.AnnotationKubeVelaVersion: "undefined",
+				},
+				OwnerReferences: []metav1.OwnerReference{{
+					UID:        types.UID("some-other-uid"),
+					Controller: pointer.BoolPtr(true),
+				}}}},
+			want: errors.Errorf("existing object is not controlled by any of UID %q", ctrlByAny),
+		},
+		"BackwardCompatability": {
+			reason: "A current object without annotation 'kubevelavesion' is legacy",
+			current: &testObject{ObjectMeta: metav1.ObjectMeta{
+				OwnerReferences: []metav1.OwnerReference{{
+					UID:        types.UID("some-other-uid"),
+					Controller: pointer.BoolPtr(true),
+				}}}},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ao := MustBeControllableByAny(ctrlByAny)
+			err := ao(context.TODO(), tc.current, nil)
+			if diff := cmp.Diff(tc.want, err, test.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\nMustBeControllableByAny(...)(...): -want error, +got error\n%s\n", tc.reason, diff)
 			}
 		})
 	}

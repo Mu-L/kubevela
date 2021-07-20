@@ -23,14 +23,18 @@ const (
 	LabelAppName = "app.oam.dev/name"
 	// LabelAppRevision records the name of Application, it's equal to name of AppConfig created by Application
 	LabelAppRevision = "app.oam.dev/appRevision"
+	// LabelAppDeployment records the name of AppDeployment.
+	LabelAppDeployment = "app.oam.dev/appDeployment"
 	// LabelAppComponent records the name of Component
 	LabelAppComponent = "app.oam.dev/component"
 	// LabelAppComponentRevision records the revision name of Component
 	LabelAppComponentRevision = "app.oam.dev/revision"
 	// LabelOAMResourceType whether a CR is workload or trait
 	LabelOAMResourceType = "app.oam.dev/resourceType"
-	// LabelAppConfigHash records the Hash value of the application configuration
-	LabelAppConfigHash = "app.oam.dev/appConfig-hash"
+	// LabelAppRevisionHash records the Hash value of the application revision
+	LabelAppRevisionHash = "app.oam.dev/app-revision-hash"
+	// LabelAppNamespace records the namespace of Application
+	LabelAppNamespace = "app.oam.dev/namesapce"
 
 	// WorkloadTypeLabel indicates the type of the workloadDefinition
 	WorkloadTypeLabel = "workload.oam.dev/type"
@@ -38,6 +42,23 @@ const (
 	TraitTypeLabel = "trait.oam.dev/type"
 	// TraitResource indicates which resource it is when a trait is composed by multiple resources in KubeVela
 	TraitResource = "trait.oam.dev/resource"
+
+	// LabelComponentDefinitionName records the name of ComponentDefinition
+	LabelComponentDefinitionName = "componentdefinition.oam.dev/name"
+	// LabelTraitDefinitionName records the name of TraitDefinition
+	LabelTraitDefinitionName = "trait.oam.dev/name"
+	// LabelPolicyDefinitionName records the name of PolicyDefinition
+	LabelPolicyDefinitionName = "policydefinition.oam.dev/name"
+	// LabelWorkflowStepDefinitionName records the name of WorkflowStepDefinition
+	LabelWorkflowStepDefinitionName = "workflowstepdefinition.oam.dev/name"
+
+	// LabelControllerRevisionComponent indicate which component the revision belong to
+	LabelControllerRevisionComponent = "controller.oam.dev/component"
+	// LabelComponentRevisionHash records the hash value of a component
+	LabelComponentRevisionHash = "app.oam.dev/component-revision-hash"
+
+	// LabelAddonsName records the name of initializer stored in configMap
+	LabelAddonsName = "addons.oam.dev/type"
 )
 
 const (
@@ -59,6 +80,10 @@ const (
 	// the application controller should treat it differently
 	AnnotationAppRollout = "app.oam.dev/rollout-template"
 
+	// AnnotationInplaceUpgrade indicates the workload should upgrade with the the same name
+	// the name of the workload instance should not changing along with the revision
+	AnnotationInplaceUpgrade = "app.oam.dev/inplace-upgrade"
+
 	// AnnotationRollingComponent indicates that the component is rolling out
 	// this is to enable any concerned controllers to handle the first component apply logic differently
 	// the value of the annotation is a list of component name of all the new component
@@ -67,4 +92,20 @@ const (
 	// AnnotationAppRevision indicates that the object is an application revision
 	//	its controller should not try to reconcile it
 	AnnotationAppRevision = "app.oam.dev/app-revision"
+
+	// AnnotationAppRevisionOnly the Application update should only generate revision,
+	// not any appContexts or components.
+	AnnotationAppRevisionOnly = "app.oam.dev/revision-only"
+
+	// AnnotationWorkflowContext is used to pass in the workflow context marshalled in json format.
+	AnnotationWorkflowContext = "app.oam.dev/workflow-context"
+
+	// AnnotationKubeVelaVersion is used to record current KubeVela version
+	AnnotationKubeVelaVersion = "oam.dev/kubevela-version"
+
+	// AnnotationFilterAnnotationKeys is used to filter annotations passed to workload and trait, split by comma
+	AnnotationFilterAnnotationKeys = "filter.oam.dev/annotation-keys"
+
+	// AnnotationFilterLabelKeys is used to filter labels passed to workload and trait, split by comma
+	AnnotationFilterLabelKeys = "filter.oam.dev/label-keys"
 )

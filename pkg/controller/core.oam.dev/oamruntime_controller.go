@@ -1,5 +1,5 @@
 /*
-Copyright 2020 The KubeVela Authors.
+Copyright 2021 The KubeVela Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,6 +15,13 @@ limitations under the License.
 */
 
 package core_oam_dev
+
+import (
+	"time"
+
+	"github.com/oam-dev/kubevela/pkg/cue/packages"
+	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
+)
 
 // ApplyOnceOnlyMode enumerates ApplyOnceOnly modes.
 type ApplyOnceOnlyMode string
@@ -36,9 +43,18 @@ const (
 
 // Args args used by controller
 type Args struct {
+
 	// RevisionLimit is the maximum number of revisions that will be maintained.
 	// The default value is 50.
 	RevisionLimit int
+
+	// AppRevisionLimit is the maximum number of application revisions that will be maintained.
+	// The default value is 10.
+	AppRevisionLimit int
+
+	// DefRevisionLimit is the maximum number of component/trait definition revisions that will be maintained.
+	// The default value is 20.
+	DefRevisionLimit int
 
 	// ApplyMode indicates whether workloads and traits should be
 	// affected if no spec change is made in the ApplicationConfiguration.
@@ -47,4 +63,21 @@ type Args struct {
 	// CustomRevisionHookURL is a webhook which will let oam-runtime to call with AC+Component info
 	// The webhook server will return a customized component revision for oam-runtime
 	CustomRevisionHookURL string
+
+	// DiscoveryMapper used for CRD discovery in controller, a K8s client is contained in it.
+	DiscoveryMapper discoverymapper.DiscoveryMapper
+	// PackageDiscover used for CRD discovery in CUE packages, a K8s client is contained in it.
+	PackageDiscover *packages.PackageDiscover
+
+	// ConcurrentReconciles is the concurrent reconcile number of the controller
+	ConcurrentReconciles int
+
+	// DependCheckWait is the time to wait for ApplicationConfiguration's dependent-resource ready
+	DependCheckWait time.Duration
+
+	// AutoGenWorkloadDefinition indicates whether automatic generated workloadDefinition which componentDefinition refers to
+	AutoGenWorkloadDefinition bool
+
+	// OAMSpecVer is the oam spec version controller want to setup
+	OAMSpecVer string
 }

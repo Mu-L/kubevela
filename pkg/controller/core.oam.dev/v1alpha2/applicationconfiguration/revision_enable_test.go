@@ -1,5 +1,5 @@
 /*
-Copyright 2020 The KubeVela Authors.
+Copyright 2021 The KubeVela Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,14 +26,12 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"github.com/crossplane/crossplane-runtime/pkg/logging"
 	v1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/pointer"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -370,7 +368,7 @@ var _ = Describe("Test Component Revision Enabled with custom component revision
 	It("custom component change revision lead to revision difference, it should not loop infinitely create", func() {
 		srv := httptest.NewServer(RevisionHandler)
 		defer srv.Close()
-		customComponentHandler := &ComponentHandler{Client: k8sClient, RevisionLimit: 100, Logger: logging.NewLogrLogger(ctrl.Log.WithName("component-handler")), CustomRevisionHookURL: srv.URL}
+		customComponentHandler := &ComponentHandler{Client: k8sClient, RevisionLimit: 100, CustomRevisionHookURL: srv.URL}
 		getDeploy := func(image string) *v1.Deployment {
 			return &v1.Deployment{
 				TypeMeta: metav1.TypeMeta{
@@ -1038,7 +1036,7 @@ var _ = Describe("Component Revision Enabled with workloadName set and apply onc
 
 		By("Check new revision workload created successfully")
 		Eventually(func() error {
-			reconcileRetry(reconciler, req)
+			reconcileRetryAndExpectErr(reconciler, req)
 			var workloadKey = client.ObjectKey{Namespace: namespace, Name: specifiedNameV1}
 			return k8sClient.Get(ctx, workloadKey, &wr)
 		}, time.Second, 300*time.Millisecond).Should(BeNil())
@@ -1046,15 +1044,9 @@ var _ = Describe("Component Revision Enabled with workloadName set and apply onc
 		Expect(wr.GetGeneration()).Should(BeEquivalentTo(1))
 		Expect(wr.Spec.Template.Spec.Containers[0].Image).Should(BeEquivalentTo("wordpress:v2"))
 
-		By("Check the new workload should only have 1 generation")
-		Expect(wr.GetGeneration()).Should(BeEquivalentTo(1))
-
-		By("Check reconcile again")
-		reconcileRetry(reconciler, req)
-
 		By("Check appconfig condition should have error")
 		Eventually(func() string {
-			reconcileRetry(reconciler, req)
+			reconcileRetryAndExpectErr(reconciler, req)
 			err := k8sClient.Get(ctx, appConfigKey, &appConfig)
 			if err != nil {
 				return err.Error()
@@ -1068,7 +1060,7 @@ var _ = Describe("Component Revision Enabled with workloadName set and apply onc
 
 		By("Check the old workload still there")
 		Eventually(func() error {
-			reconcileRetry(reconciler, req)
+			reconcileRetryAndExpectErr(reconciler, req)
 			var workloadKey = client.ObjectKey{Namespace: namespace, Name: specifiedNameBase}
 			return k8sClient.Get(ctx, workloadKey, &wr)
 		}, time.Second, 300*time.Millisecond).Should(BeNil())

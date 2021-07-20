@@ -1,3 +1,19 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package types
 
 const (
@@ -13,6 +29,8 @@ const (
 	DefaultEnvName = "default"
 	// DefaultAppNamespace defines the default K8s namespace for Apps created by KubeVela
 	DefaultAppNamespace = "default"
+	// AutoDetectWorkloadDefinition defines the default workload type for ComponentDefinition which doesn't specify a workload
+	AutoDetectWorkloadDefinition = "autodetects.core.oam.dev"
 )
 
 const (
@@ -34,8 +52,6 @@ type EnvMeta struct {
 	Email     string `json:"email,omitempty"`
 	Domain    string `json:"domain,omitempty"`
 
-	// Below are not arguments, should be auto-generated
-	Issuer  string `json:"issuer"`
 	Current string `json:"current,omitempty"`
 }
 
@@ -50,4 +66,6 @@ const (
 	TypeCap = "Managing Capabilities"
 	// TypeSystem defines one category
 	TypeSystem = "System"
+	// TypePlugin defines one category used in Kubectl Plugin
+	TypePlugin = "Plugin Command"
 )

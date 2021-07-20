@@ -1,7 +1,25 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package apply
 
 import (
 	"context"
+
+	"github.com/oam-dev/kubevela/pkg/oam"
 
 	"github.com/pkg/errors"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -11,9 +29,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	"github.com/oam-dev/kubevela/pkg/controller/common"
-	"github.com/oam-dev/kubevela/pkg/oam"
 )
 
 // Applicator applies new state to an object or create it if not exist.
@@ -72,10 +87,10 @@ type APIApplicator struct {
 func loggingApply(msg string, desired runtime.Object) {
 	d, ok := desired.(metav1.Object)
 	if !ok {
-		klog.V(common.LogDebug).InfoS(msg, "resource", desired.GetObjectKind().GroupVersionKind().String())
+		klog.InfoS(msg, "resource", desired.GetObjectKind().GroupVersionKind().String())
 		return
 	}
-	klog.V(common.LogDebug).InfoS(msg, "name", d.GetName(), "resource", desired.GetObjectKind().GroupVersionKind().String())
+	klog.InfoS(msg, "name", d.GetName(), "resource", desired.GetObjectKind().GroupVersionKind().String())
 }
 
 // Apply applies new state to an object or create it if not exist
@@ -160,10 +175,39 @@ func MustBeControllableBy(u types.UID) ApplyOption {
 		if c == nil {
 			return nil
 		}
-
 		if c.UID != u {
 			return errors.Errorf("existing object is not controlled by UID %q", u)
 		}
 		return nil
+	}
+}
+
+// MustBeControllableByAny requires that the new object is controllable by any of the object with
+// the supplied UID.
+func MustBeControllableByAny(ctrlUIDs []types.UID) ApplyOption {
+	return func(_ context.Context, existing, _ runtime.Object) error {
+		if existing == nil || len(ctrlUIDs) == 0 {
+			return nil
+		}
+		existingObjMeta, _ := existing.(metav1.Object)
+		c := metav1.GetControllerOf(existingObjMeta)
+		if c == nil {
+			return nil
+		}
+
+		// NOTE This is for backward compatibility after ApplicationContext is deprecated.
+		// In legacy clusters, existing resources are ctrl-owned by ApplicationContext or ResourceTracker (only for
+		// cx-namespace and cluster-scope resources).  We use a particular annotation to identify legacy resources.
+		if len(existingObjMeta.GetAnnotations()[oam.AnnotationKubeVelaVersion]) == 0 {
+			// just skip checking UIDs, '3-way-merge' will remove the legacy ctrl-owner automatically
+			return nil
+		}
+
+		for _, u := range ctrlUIDs {
+			if c.UID == u {
+				return nil
+			}
+		}
+		return errors.Errorf("existing object is not controlled by any of UID %q", ctrlUIDs)
 	}
 }

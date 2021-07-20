@@ -1,3 +1,19 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package rollout
 
 import (
@@ -13,7 +29,6 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
-	"github.com/oam-dev/kubevela/pkg/controller/common"
 )
 
 // issue an http call to the an end ponit
@@ -109,7 +124,7 @@ func callWebhook(ctx context.Context, resource klog.KMetadata, phase string, rw 
 	}
 	if !accepted {
 		err := fmt.Errorf("http request to the webhook not accepeted, http status = %d", status)
-		klog.V(common.LogDebug).InfoS("the status is not expected", "expected status", rw.ExpectedStatus)
+		klog.ErrorS(err, "The status is not expected", "expected status", rw.ExpectedStatus)
 		return err
 	}
 	return nil

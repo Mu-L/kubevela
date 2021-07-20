@@ -1,3 +1,19 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package cli
 
 import (
@@ -9,12 +25,13 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
+	common2 "github.com/oam-dev/kubevela/pkg/utils/common"
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
 	"github.com/oam-dev/kubevela/references/common"
 )
 
 // CapabilityCommandGroup commands for capability center
-func CapabilityCommandGroup(c types.Args, ioStream cmdutil.IOStreams) *cobra.Command {
+func CapabilityCommandGroup(c common2.Args, ioStream cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cap",
 		Short: "Manage capability centers and installing/uninstalling capabilities",
@@ -57,7 +74,7 @@ func NewCapCenterConfigCommand(ioStreams cmdutil.IOStreams) *cobra.Command {
 		Use:     "config <centerName> <centerURL>",
 		Short:   "Configure (add if not exist) a capability center, default is local (built-in capabilities)",
 		Long:    "Configure (add if not exist) a capability center, default is local (built-in capabilities)",
-		Example: `vela cap center config mycenter https://github.com/oam-dev/catalog/cap-center`,
+		Example: `vela cap center config mycenter https://github.com/oam-dev/catalog/tree/master/registry`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			argsLength := len(args)
 			if argsLength < 2 {
@@ -73,12 +90,12 @@ func NewCapCenterConfigCommand(ioStreams cmdutil.IOStreams) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.PersistentFlags().StringP("token", "t", "", "Github Repo token")
+	AddTokenVarFlags(cmd)
 	return cmd
 }
 
 // NewCapInstallCommand Install capability into cluster
-func NewCapInstallCommand(c types.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+func NewCapInstallCommand(c common2.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "install <center>/<name>",
 		Short:   "Install capability into cluster",
@@ -107,12 +124,12 @@ func NewCapInstallCommand(c types.Args, ioStreams cmdutil.IOStreams) *cobra.Comm
 			return nil
 		},
 	}
-	cmd.PersistentFlags().StringP("token", "t", "", "Github Repo token")
+	AddTokenVarFlags(cmd)
 	return cmd
 }
 
 // NewCapUninstallCommand Uninstall capability from cluster
-func NewCapUninstallCommand(c types.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+func NewCapUninstallCommand(c common2.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "uninstall <name>",
 		Short:   "Uninstall capability from cluster",
@@ -144,7 +161,7 @@ func NewCapUninstallCommand(c types.Args, ioStreams cmdutil.IOStreams) *cobra.Co
 			return common.RemoveCapability(env.Namespace, c, newClient, name, ioStreams)
 		},
 	}
-	cmd.PersistentFlags().StringP("token", "t", "", "Github Repo token")
+	AddTokenVarFlags(cmd)
 	return cmd
 }
 
@@ -171,7 +188,7 @@ func NewCapCenterSyncCommand(ioStreams cmdutil.IOStreams) *cobra.Command {
 }
 
 // NewCapListCommand List capabilities from cap-center
-func NewCapListCommand(c types.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+func NewCapListCommand(c common2.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "ls [cap-center]",
 		Short:   "List capabilities from cap-center",
@@ -186,17 +203,11 @@ func NewCapListCommand(c types.Args, ioStreams cmdutil.IOStreams) *cobra.Command
 			if err != nil {
 				return err
 			}
-			capabilityList, err := common.ListCapabilities(env.Namespace, c, repoName)
+
+			err = printCenterCapabilities(env.Namespace, repoName, c, ioStreams, nil)
 			if err != nil {
 				return err
 			}
-			table := newUITable()
-			table.AddRow("NAME", "CENTER", "TYPE", "DEFINITION", "STATUS", "APPLIES-TO")
-
-			for _, c := range capabilityList {
-				table.AddRow(c.Name, c.Center, c.Type, c.CrdName, c.Status, c.AppliesTo)
-			}
-			ioStreams.Info(table.String())
 			return nil
 		},
 	}
@@ -256,4 +267,23 @@ func removeCapCenter(args []string, ioStreams cmdutil.IOStreams) error {
 		ioStreams.Info(msg)
 	}
 	return err
+}
+func printCenterCapabilities(namespace, repoName string, args common2.Args, ioStreams cmdutil.IOStreams, option *types.CapType) error {
+	capabilityList, err := common.ListCapabilities(namespace, args, repoName)
+	if err != nil {
+		return err
+	}
+	table := newUITable()
+	table.AddRow("NAME", "CENTER", "TYPE", "DEFINITION", "STATUS", "APPLIES-TO")
+
+	for _, c := range capabilityList {
+		if option == nil {
+			table.AddRow(c.Name, c.Center, c.Type, c.CrdName, c.Status, c.AppliesTo)
+		}
+		if option != nil && c.Type == *option {
+			table.AddRow(c.Name, c.Center, c.Type, c.CrdName, c.Status, c.AppliesTo)
+		}
+	}
+	ioStreams.Info(table.String())
+	return nil
 }

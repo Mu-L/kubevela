@@ -1,3 +1,19 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package applicationconfiguration
 
 import (
@@ -11,8 +27,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/runtime/inject"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -38,9 +54,6 @@ type MutatingHandler struct {
 	Decoder *admission.Decoder
 }
 
-// log is for logging in this package.
-var mutatelog = logf.Log.WithName("applicationconfiguration mutate webhook")
-
 var _ admission.Handler = &MutatingHandler{}
 
 // Handle handles admission requests.
@@ -53,10 +66,12 @@ func (h *MutatingHandler) Handle(ctx context.Context, req admission.Request) adm
 	}
 	// mutate the object
 	if err := h.Mutate(obj); err != nil {
-		mutatelog.Error(err, "failed to mutate the applicationConfiguration", "name", obj.Name)
+		klog.InfoS("Failed to mutate the applicationConfiguration", "applicationConfiguration", klog.KObj(obj),
+			"err", err)
 		return admission.Errored(http.StatusBadRequest, err)
 	}
-	mutatelog.Info("Print the mutated obj", "obj name", obj.Name, "mutated obj", string(util.JSONMarshal(obj.Spec)))
+	klog.InfoS("Print the mutated applicationConfiguration", "applicationConfiguration",
+		klog.KObj(obj), "mutated applicationConfiguration", string(util.JSONMarshal(obj.Spec)))
 
 	marshalled, err := json.Marshal(obj)
 	if err != nil {
@@ -65,15 +80,15 @@ func (h *MutatingHandler) Handle(ctx context.Context, req admission.Request) adm
 
 	resp := admission.PatchResponseFromRaw(req.AdmissionRequest.Object.Raw, marshalled)
 	if len(resp.Patches) > 0 {
-		mutatelog.Info("admit ApplicationConfiguration",
-			"namespace", obj.Namespace, "name", obj.Name, "patches", util.JSONMarshal(resp.Patches))
+		klog.InfoS("Admit applicationConfiguration", "applicationConfiguration", klog.KObj(obj),
+			"patches", util.JSONMarshal(resp.Patches))
 	}
 	return resp
 }
 
 // Mutate sets all the default value for the Component
 func (h *MutatingHandler) Mutate(obj *v1alpha2.ApplicationConfiguration) error {
-	mutatelog.Info("mutate", "name", obj.Name)
+	klog.InfoS("Mutate applicationConfiguration", "applicationConfiguration", klog.KObj(obj))
 
 	for compIdx, comp := range obj.Spec.Components {
 		var updated bool
@@ -109,7 +124,7 @@ func (h *MutatingHandler) mutateTrait(content map[string]interface{}, compName s
 	if !ok {
 		return nil, false, fmt.Errorf("name of trait should be string instead of %s", reflect.TypeOf(content[TraitTypeField]))
 	}
-	mutatelog.Info("the trait refers to traitDefinition by name", "compName", compName, "trait name", traitType)
+	klog.InfoS("Trait refers to traitDefinition by name", "compName", compName, "trait name", traitType)
 	// Fetch the corresponding traitDefinition CR, the traitDefinition crd is cluster scoped
 	traitDefinition := &v1alpha2.TraitDefinition{}
 	if err := h.Client.Get(context.TODO(), types.NamespacedName{Name: traitType}, traitDefinition); err != nil {
@@ -138,7 +153,7 @@ func (h *MutatingHandler) mutateTrait(content map[string]interface{}, compName s
 	}.String()
 	trait.SetAPIVersion(apiVersion)
 	trait.SetKind(customResourceDefinition.Spec.Names.Kind)
-	mutatelog.Info("Set the trait GVK", "trait api version", trait.GetAPIVersion(), "trait Kind", trait.GetKind())
+	klog.InfoS("Set the trait GVK", "trait apiVersion", trait.GetAPIVersion(), "trait Kind", trait.GetKind())
 	// add traitType label
 	trait.SetLabels(util.MergeMapOverrideWithDst(trait.GetLabels(), map[string]string{oam.TraitTypeLabel: traitType}))
 	// copy back the object

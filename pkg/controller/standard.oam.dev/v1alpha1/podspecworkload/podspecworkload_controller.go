@@ -1,5 +1,5 @@
 /*
-
+Copyright 2021 The KubeVela Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+
+	controller "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
 
 	cpv1alpha1 "github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
 	"github.com/crossplane/crossplane-runtime/pkg/event"
@@ -97,16 +99,16 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	if err != nil {
 		log.Error(err, "Failed to render a deployment")
 		r.record.Event(eventObj, event.Warning(errRenderDeployment, err))
-		return util.ReconcileWaitResult,
-			util.PatchCondition(ctx, r, &workload, cpv1alpha1.ReconcileError(errors.Wrap(err, errRenderDeployment)))
+		return ctrl.Result{},
+			util.EndReconcileWithNegativeCondition(ctx, r, &workload, cpv1alpha1.ReconcileError(errors.Wrap(err, errRenderDeployment)))
 	}
 	// server side apply
 	applyOpts := []client.PatchOption{client.ForceOwnership, client.FieldOwner(workload.GetUID())}
 	if err := r.Patch(ctx, deploy, client.Apply, applyOpts...); err != nil {
 		log.Error(err, "Failed to apply to a deployment")
 		r.record.Event(eventObj, event.Warning(errApplyDeployment, err))
-		return util.ReconcileWaitResult,
-			util.PatchCondition(ctx, r, &workload, cpv1alpha1.ReconcileError(errors.Wrap(err, errApplyDeployment)))
+		return ctrl.Result{},
+			util.EndReconcileWithNegativeCondition(ctx, r, &workload, cpv1alpha1.ReconcileError(errors.Wrap(err, errApplyDeployment)))
 	}
 	r.record.Event(eventObj, event.Normal("Deployment created",
 		fmt.Sprintf("Workload `%s` successfully patched a deployment `%s`",
@@ -130,15 +132,15 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		if err != nil {
 			log.Error(err, "Failed to render a service")
 			r.record.Event(eventObj, event.Warning(errRenderService, err))
-			return util.ReconcileWaitResult,
-				util.PatchCondition(ctx, r, &workload, cpv1alpha1.ReconcileError(errors.Wrap(err, errRenderService)))
+			return ctrl.Result{},
+				util.EndReconcileWithNegativeCondition(ctx, r, &workload, cpv1alpha1.ReconcileError(errors.Wrap(err, errRenderService)))
 		}
 		// server side apply the service
 		if err := r.Patch(ctx, service, client.Apply, applyOpts...); err != nil {
 			log.Error(err, "Failed to apply a service")
 			r.record.Event(eventObj, event.Warning(errApplyDeployment, err))
-			return util.ReconcileWaitResult,
-				util.PatchCondition(ctx, r, &workload, cpv1alpha1.ReconcileError(errors.Wrap(err, errApplyService)))
+			return ctrl.Result{},
+				util.EndReconcileWithNegativeCondition(ctx, r, &workload, cpv1alpha1.ReconcileError(errors.Wrap(err, errApplyService)))
 		}
 		r.record.Event(eventObj, event.Normal("Service created",
 			fmt.Sprintf("Workload `%s` successfully server side patched a service `%s`",
@@ -153,10 +155,11 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		})
 	}
 
+	workload.SetConditions(cpv1alpha1.ReconcileSuccess())
 	if err := r.UpdateStatus(ctx, &workload); err != nil {
-		return util.ReconcileWaitResult, err
+		return ctrl.Result{}, util.EndReconcileWithNegativeCondition(ctx, r, &workload, cpv1alpha1.ReconcileError(err))
 	}
-	return ctrl.Result{}, util.PatchCondition(ctx, r, &workload, cpv1alpha1.ReconcileSuccess())
+	return ctrl.Result{}, nil
 }
 
 // create a corresponding deployment
@@ -292,7 +295,7 @@ func (r *Reconciler) UpdateStatus(ctx context.Context, workload *v1alpha1.PodSpe
 }
 
 // Setup adds a controller that reconciles PodSpecWorkload.
-func Setup(mgr ctrl.Manager) error {
+func Setup(mgr ctrl.Manager, args controller.Args) error {
 	reconciler := Reconciler{
 		Client: mgr.GetClient(),
 		log:    ctrl.Log.WithName("PodSpecWorkload"),

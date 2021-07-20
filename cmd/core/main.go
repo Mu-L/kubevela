@@ -1,3 +1,19 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package main
 
 import (
@@ -6,36 +22,24 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
-	"github.com/crossplane/crossplane-runtime/pkg/logging"
-	injectorv1alpha1 "github.com/oam-dev/trait-injector/api/v1alpha1"
-	injectorcontroller "github.com/oam-dev/trait-injector/controllers"
-	"github.com/oam-dev/trait-injector/pkg/injector"
-	"github.com/oam-dev/trait-injector/pkg/plugin"
-	kruise "github.com/openkruise/kruise-api/apps/v1alpha1"
-	certmanager "github.com/wonderflow/cert-manager-api/pkg/apis/certmanager/v1"
-	"go.uber.org/zap/zapcore"
-	"gopkg.in/natefinch/lumberjack.v2"
-	crdv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	oamcore "github.com/oam-dev/kubevela/apis/core.oam.dev"
-	velacore "github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
-	velacontroller "github.com/oam-dev/kubevela/pkg/controller"
+	standardcontroller "github.com/oam-dev/kubevela/pkg/controller"
+	commonconfig "github.com/oam-dev/kubevela/pkg/controller/common"
 	oamcontroller "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
 	oamv1alpha2 "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1alpha2"
 	"github.com/oam-dev/kubevela/pkg/controller/utils"
+	"github.com/oam-dev/kubevela/pkg/cue/packages"
 	"github.com/oam-dev/kubevela/pkg/oam"
+	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
+	"github.com/oam-dev/kubevela/pkg/utils/common"
 	"github.com/oam-dev/kubevela/pkg/utils/system"
 	oamwebhook "github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev"
 	velawebhook "github.com/oam-dev/kubevela/pkg/webhook/standard.oam.dev"
@@ -47,30 +51,18 @@ const (
 )
 
 var (
-	setupLog           = ctrl.Log.WithName(kubevelaName)
-	scheme             = runtime.NewScheme()
+	scheme             = common.Scheme
 	waitSecretTimeout  = 90 * time.Second
 	waitSecretInterval = 2 * time.Second
 )
 
-func init() {
-	_ = clientgoscheme.AddToScheme(scheme)
-	_ = crdv1.AddToScheme(scheme)
-	_ = oamcore.AddToScheme(scheme)
-	_ = velacore.AddToScheme(scheme)
-	_ = injectorv1alpha1.AddToScheme(scheme)
-	_ = certmanager.AddToScheme(scheme)
-	_ = kruise.AddToScheme(scheme)
-	// +kubebuilder:scaffold:scheme
-}
-
 func main() {
 	var metricsAddr, logFilePath, leaderElectionNamespace string
-	var enableLeaderElection, logCompress bool
-	var logRetainDate int
+	var enableLeaderElection, logDebug bool
+	var logFileMaxSize uint64
 	var certDir string
 	var webhookPort int
-	var useWebhook, useTraitInjector bool
+	var useWebhook bool
 	var controllerArgs oamcontroller.Args
 	var healthAddr string
 	var disableCaps string
@@ -79,7 +71,6 @@ func main() {
 	var applyOnceOnly string
 
 	flag.BoolVar(&useWebhook, "use-webhook", false, "Enable Admission Webhook")
-	flag.BoolVar(&useTraitInjector, "use-trait-injector", false, "Enable TraitInjector")
 	flag.StringVar(&certDir, "webhook-cert-dir", "/k8s-webhook-server/serving-certs", "Admission webhook cert/key dir.")
 	flag.IntVar(&webhookPort, "webhook-port", 9443, "admission webhook listen address")
 	flag.StringVar(&metricsAddr, "metrics-addr", ":8080", "The address the metric endpoint binds to.")
@@ -88,43 +79,46 @@ func main() {
 	flag.StringVar(&leaderElectionNamespace, "leader-election-namespace", "",
 		"Determines the namespace in which the leader election configmap will be created.")
 	flag.StringVar(&logFilePath, "log-file-path", "", "The file to write logs to.")
-	flag.IntVar(&logRetainDate, "log-retain-date", 7, "The number of days of logs history to retain.")
-	flag.BoolVar(&logCompress, "log-compress", true, "Enable compression on the rotated logs.")
+	flag.Uint64Var(&logFileMaxSize, "log-file-max-size", 1024, "Defines the maximum size a log file can grow to, Unit is megabytes.")
+	flag.BoolVar(&logDebug, "log-debug", false, "Enable debug logs for development purpose")
 	flag.IntVar(&controllerArgs.RevisionLimit, "revision-limit", 50,
 		"RevisionLimit is the maximum number of revisions that will be maintained. The default value is 50.")
+	flag.IntVar(&controllerArgs.AppRevisionLimit, "application-revision-limit", 10,
+		"application-revision-limit is the maximum number of application useless revisions that will be maintained, if the useless revisions exceed this number, older ones will be GCed first.The default value is 10.")
+	flag.IntVar(&controllerArgs.DefRevisionLimit, "definition-revision-limit", 20,
+		"definition-revision-limit is the maximum number of component/trait definition useless revisions that will be maintained, if the useless revisions exceed this number, older ones will be GCed first.The default value is 20.")
+	flag.StringVar(&controllerArgs.CustomRevisionHookURL, "custom-revision-hook-url", "",
+		"custom-revision-hook-url is a webhook url which will let KubeVela core to call with applicationConfiguration and component info and return a customized component revision")
+	flag.BoolVar(&controllerArgs.AutoGenWorkloadDefinition, "autogen-workload-definition", true, "Automatic generated workloadDefinition which componentDefinition refers to.")
 	flag.StringVar(&healthAddr, "health-addr", ":9440", "The address the health endpoint binds to.")
 	flag.StringVar(&applyOnceOnly, "apply-once-only", "false",
 		"For the purpose of some production environment that workload or trait should not be affected if no spec change, available options: on, off, force.")
-	flag.StringVar(&controllerArgs.CustomRevisionHookURL, "custom-revision-hook-url", "",
-		"custom-revision-hook-url is a webhook url which will let KubeVela core to call with applicationConfiguration and component info and return a customized component revision")
 	flag.StringVar(&disableCaps, "disable-caps", "", "To be disabled builtin capability list.")
 	flag.StringVar(&storageDriver, "storage-driver", "Local", "Application file save to the storage driver")
-	flag.DurationVar(&syncPeriod, "informer-re-sync-interval", 5*time.Minute,
+	flag.DurationVar(&syncPeriod, "informer-re-sync-interval", 60*time.Minute,
 		"controller shared informer lister full re-sync period")
 	flag.StringVar(&oam.SystemDefinitonNamespace, "system-definition-namespace", "vela-system", "define the namespace of the system-level definition")
-	flag.Parse()
+	flag.IntVar(&controllerArgs.ConcurrentReconciles, "concurrent-reconciles", 4, "concurrent-reconciles is the concurrent reconcile number of the controller. The default value is 4")
+	flag.DurationVar(&controllerArgs.DependCheckWait, "depend-check-wait", 30*time.Second, "depend-check-wait is the time to wait for ApplicationConfiguration's dependent-resource ready."+
+		"The default value is 30s, which means if dependent resources were not prepared, the ApplicationConfiguration would be reconciled after 30s.")
+	flag.StringVar(&controllerArgs.OAMSpecVer, "oam-spec-ver", "v0.3", "oam-spec-ver is the oam spec version controller want to setup, available options: v0.2, v0.3, all")
 
+	flag.Parse()
 	// setup logging
-	var w io.Writer
-	if len(logFilePath) > 0 {
-		w = zapcore.AddSync(&lumberjack.Logger{
-			Filename: logFilePath,
-			MaxAge:   logRetainDate, // days
-			Compress: logCompress,
-		})
-	} else {
-		w = os.Stdout
+	klog.InitFlags(nil)
+	if logDebug {
+		_ = flag.Set("v", strconv.Itoa(int(commonconfig.LogDebug)))
 	}
 
-	logger := zap.New(func(o *zap.Options) {
-		o.Development = true
-		o.DestWritter = w
-	})
-	ctrl.SetLogger(logger)
+	if logFilePath != "" {
+		_ = flag.Set("logtostderr", "false")
+		_ = flag.Set("log_file", logFilePath)
+		_ = flag.Set("log_file_max_size", strconv.FormatUint(logFileMaxSize, 10))
+	}
 
-	setupLog.Info(fmt.Sprintf("KubeVela Version: %s, GIT Revision: %s.", version.VelaVersion, version.GitRevision))
-	setupLog.Info(fmt.Sprintf("Disable Capabilities: %s.", disableCaps))
-	setupLog.Info(fmt.Sprintf("core init with definition namespace %s", oam.SystemDefinitonNamespace))
+	klog.InfoS("KubeVela information", "version", version.VelaVersion, "revision", version.GitRevision)
+	klog.InfoS("Disable capabilities", "name", disableCaps)
+	klog.InfoS("Vela-Core init", "definition namespace", oam.SystemDefinitonNamespace)
 
 	restConfig := ctrl.GetConfigOrDie()
 	restConfig.UserAgent = kubevelaName + "/" + version.GitRevision
@@ -141,99 +135,97 @@ func main() {
 		SyncPeriod:              &syncPeriod,
 	})
 	if err != nil {
-		setupLog.Error(err, "unable to create a controller manager")
+		klog.ErrorS(err, "Unable to create a controller manager")
 		os.Exit(1)
 	}
 
 	if err := registerHealthChecks(mgr); err != nil {
-		setupLog.Error(err, "unable to register ready/health checks")
+		klog.ErrorS(err, "Unable to register ready/health checks")
 		os.Exit(1)
 	}
 
 	if err := utils.CheckDisabledCapabilities(disableCaps); err != nil {
-		setupLog.Error(err, "unable to get enabled capabilities")
+		klog.ErrorS(err, "Unable to get enabled capabilities")
 		os.Exit(1)
-	}
-
-	if useWebhook {
-		setupLog.Info("vela webhook enabled, will serving at :" + strconv.Itoa(webhookPort))
-		if err = oamwebhook.Register(mgr); err != nil {
-			setupLog.Error(err, "unable to setup oam runtime webhook")
-			os.Exit(1)
-		}
-		velawebhook.Register(mgr, disableCaps)
-		if err := waitWebhookSecretVolume(certDir, waitSecretTimeout, waitSecretInterval); err != nil {
-			setupLog.Error(err, "unable to get webhook secret")
-			os.Exit(1)
-		}
 	}
 
 	switch strings.ToLower(applyOnceOnly) {
 	case "", "false", string(oamcontroller.ApplyOnceOnlyOff):
 		controllerArgs.ApplyMode = oamcontroller.ApplyOnceOnlyOff
-		setupLog.Info("ApplyOnceOnly is disabled")
+		klog.Info("ApplyOnceOnly is disabled")
 	case "true", string(oamcontroller.ApplyOnceOnlyOn):
 		controllerArgs.ApplyMode = oamcontroller.ApplyOnceOnlyOn
-		setupLog.Info("ApplyOnceOnly is enabled, that means workload or trait only apply once if no spec change even they are changed by others")
+		klog.Info("ApplyOnceOnly is enabled, that means workload or trait only apply once if no spec change even they are changed by others")
 	case string(oamcontroller.ApplyOnceOnlyForce):
 		controllerArgs.ApplyMode = oamcontroller.ApplyOnceOnlyForce
-		setupLog.Info("ApplyOnceOnlyForce is enabled, that means workload or trait only apply once if no spec change even they are changed or deleted by others")
+		klog.Info("ApplyOnceOnlyForce is enabled, that means workload or trait only apply once if no spec change even they are changed or deleted by others")
 	default:
-		setupLog.Error(fmt.Errorf("invalid apply-once-only value: %s", applyOnceOnly),
-			"unable to setup the vela core controller",
-			"valid apply-once-only value:", "on/off/force, by default it's off")
+		klog.ErrorS(fmt.Errorf("invalid apply-once-only value: %s", applyOnceOnly),
+			"Unable to setup the vela core controller",
+			"apply-once-only", "on/off/force, by default it's off")
 		os.Exit(1)
 	}
 
-	if err = oamv1alpha2.Setup(mgr, controllerArgs, logging.NewLogrLogger(setupLog)); err != nil {
-		setupLog.Error(err, "unable to setup the oam core controller")
+	dm, err := discoverymapper.New(mgr.GetConfig())
+	if err != nil {
+		klog.ErrorS(err, "Failed to create CRD discovery client")
+		os.Exit(1)
+	}
+	controllerArgs.DiscoveryMapper = dm
+	pd, err := packages.NewPackageDiscover(mgr.GetConfig())
+	if err != nil {
+		klog.Error(err, "Failed to create CRD discovery for CUE package client")
+		if !packages.IsCUEParseErr(err) {
+			os.Exit(1)
+		}
+	}
+	controllerArgs.PackageDiscover = pd
+
+	if useWebhook {
+		klog.InfoS("Enable webhook", "server port", strconv.Itoa(webhookPort))
+		oamwebhook.Register(mgr, controllerArgs)
+		velawebhook.Register(mgr, disableCaps)
+		if err := waitWebhookSecretVolume(certDir, waitSecretTimeout, waitSecretInterval); err != nil {
+			klog.ErrorS(err, "Unable to get webhook secret")
+			os.Exit(1)
+		}
+	}
+
+	if err = oamv1alpha2.Setup(mgr, controllerArgs); err != nil {
+		klog.ErrorS(err, "Unable to setup the oam controller")
 		os.Exit(1)
 	}
 
-	if err = velacontroller.Setup(mgr, disableCaps); err != nil {
-		setupLog.Error(err, "unable to setup the vela core controller")
+	if err = standardcontroller.Setup(mgr, disableCaps, controllerArgs); err != nil {
+		klog.ErrorS(err, "Unable to setup the vela core controller")
 		os.Exit(1)
 	}
+
 	if driver := os.Getenv(system.StorageDriverEnv); len(driver) == 0 {
 		// first use system environment,
 		err := os.Setenv(system.StorageDriverEnv, storageDriver)
 		if err != nil {
-			setupLog.Error(err, "unable to setup the vela core controller")
+			klog.ErrorS(err, "Unable to setup the vela core controller")
 			os.Exit(1)
 		}
 	}
-	setupLog.Info("use storage driver", "storageDriver", os.Getenv(system.StorageDriverEnv))
+	klog.InfoS("Use storage driver", "storageDriver", os.Getenv(system.StorageDriverEnv))
 
-	if useTraitInjector {
-		// register all service injectors
-		plugin.RegisterTargetInjectors(injector.Defaults()...)
+	klog.Info("Start the vela controller manager")
 
-		tiWebhook := &injectorcontroller.ServiceBindingReconciler{
-			Client:   mgr.GetClient(),
-			Log:      ctrl.Log.WithName("controllers").WithName("ServiceBinding"),
-			Scheme:   mgr.GetScheme(),
-			Recorder: mgr.GetEventRecorderFor("servicebinding"),
-		}
-		if err = (tiWebhook).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "ServiceBinding")
-			os.Exit(1)
-		}
-		// this has hard coded requirement "./ssl/service-injector.pem", "./ssl/service-injector.key"
-		go tiWebhook.ServeAdmission()
-	}
-
-	setupLog.Info("starting the vela controller manager")
-
-	if err := mgr.Start(makeSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
+	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+		klog.ErrorS(err, "Failed to run manager")
 		os.Exit(1)
 	}
-	setupLog.Info("program safely stops...")
+	if logFilePath != "" {
+		klog.Flush()
+	}
+	klog.Info("Safely stops Program...")
 }
 
 // registerHealthChecks is used to create readiness&liveness probes
 func registerHealthChecks(mgr ctrl.Manager) error {
-	setupLog.Info("creating readiness/health check")
+	klog.Info("Create readiness/health check")
 	if err := mgr.AddReadyzCheck("ping", healthz.Ping); err != nil {
 		return err
 	}
@@ -252,8 +244,8 @@ func waitWebhookSecretVolume(certDir string, timeout, interval time.Duration) er
 		if time.Since(start) > timeout {
 			return fmt.Errorf("getting webhook secret timeout after %s", timeout.String())
 		}
-		setupLog.Info(fmt.Sprintf("waiting webhook secret, time consumed: %d/%d seconds ...",
-			int64(time.Since(start).Seconds()), int64(timeout.Seconds())))
+		klog.InfoS("Wait webhook secret", "time consumed(second)", int64(time.Since(start).Seconds()),
+			"timeout(second)", int64(timeout.Seconds()))
 		if _, err := os.Stat(certDir); !os.IsNotExist(err) {
 			ready := func() bool {
 				f, err := os.Open(filepath.Clean(certDir))
@@ -275,8 +267,8 @@ func waitWebhookSecretVolume(certDir string, timeout, interval time.Duration) er
 					return nil
 				})
 				if err == nil {
-					setupLog.Info(fmt.Sprintf("webhook secret is ready (time consumed: %d seconds)",
-						int64(time.Since(start).Seconds())))
+					klog.InfoS("Webhook secret is ready", "time consumed(second)",
+						int64(time.Since(start).Seconds()))
 					return true
 				}
 				return false
@@ -286,22 +278,4 @@ func waitWebhookSecretVolume(certDir string, timeout, interval time.Duration) er
 			}
 		}
 	}
-}
-
-func makeSignalHandler() (stopCh <-chan struct{}) {
-	stop := make(chan struct{})
-	c := make(chan os.Signal, 2)
-
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-
-	go func() {
-		<-c
-		close(stop)
-
-		// second signal. Exit directly.
-		<-c
-		os.Exit(1)
-	}()
-
-	return stop
 }

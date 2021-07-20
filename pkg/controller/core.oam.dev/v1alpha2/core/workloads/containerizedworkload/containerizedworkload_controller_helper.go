@@ -1,3 +1,19 @@
+/*
+Copyright 2021 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package containerizedworkload
 
 import (
@@ -8,11 +24,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
-
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 )
@@ -40,7 +56,7 @@ func (r *Reconciler) renderDeployment(ctx context.Context,
 			}
 		}
 	}
-	r.log.Info("rendered a deployment", "deploy", deploy.Spec.Template.Spec)
+	klog.InfoS("Rendered a deployment", "deploy", deploy.Spec.Template.Spec)
 
 	// set the controller reference so that we can watch this deployment and it will be deleted automatically
 	if err := ctrl.SetControllerReference(workload, deploy, r.Scheme); err != nil {
@@ -96,14 +112,14 @@ func (r *Reconciler) renderConfigMaps(ctx context.Context,
 // nolint:gocyclo
 func (r *Reconciler) cleanupResources(ctx context.Context,
 	workload *v1alpha2.ContainerizedWorkload, deployUID, serviceUID *types.UID) error {
-	log := r.log.WithValues("gc deployment", workload.Name)
+	klog.InfoS("GC deployment", "workload", klog.KObj(workload))
 	var deploy appsv1.Deployment
 	var service corev1.Service
 	for _, res := range workload.Status.Resources {
 		uid := res.UID
 		if res.Kind == util.KindDeployment && res.APIVersion == appsv1.SchemeGroupVersion.String() {
 			if uid != *deployUID {
-				log.Info("Found an orphaned deployment", "deployment UID", *deployUID, "orphaned  UID", uid)
+				klog.InfoS("Found an orphaned deployment", "deployment UID", *deployUID, "orphaned  UID", uid)
 				dn := client.ObjectKey{Name: res.Name, Namespace: workload.Namespace}
 				if err := r.Get(ctx, dn, &deploy); err != nil {
 					if apierrors.IsNotFound(err) {
@@ -114,11 +130,11 @@ func (r *Reconciler) cleanupResources(ctx context.Context,
 				if err := r.Delete(ctx, &deploy); err != nil {
 					return err
 				}
-				log.Info("Removed an orphaned deployment", "deployment UID", *deployUID, "orphaned UID", uid)
+				klog.InfoS("Removed an orphaned deployment", "deployment UID", *deployUID, "orphaned UID", uid)
 			}
 		} else if res.Kind == util.KindService && res.APIVersion == corev1.SchemeGroupVersion.String() {
 			if uid != *serviceUID {
-				log.Info("Found an orphaned service", "orphaned  UID", uid)
+				klog.InfoS("Found an orphaned service", "orphaned  UID", uid)
 				sn := client.ObjectKey{Name: res.Name, Namespace: workload.Namespace}
 				if err := r.Get(ctx, sn, &service); err != nil {
 					if apierrors.IsNotFound(err) {
@@ -129,7 +145,7 @@ func (r *Reconciler) cleanupResources(ctx context.Context,
 				if err := r.Delete(ctx, &service); err != nil {
 					return err
 				}
-				log.Info("Removed an orphaned service", "orphaned UID", uid)
+				klog.InfoS("Removed an orphaned service", "orphaned UID", uid)
 			}
 		}
 	}
